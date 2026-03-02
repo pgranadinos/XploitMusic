@@ -1,0 +1,197 @@
+1<?xml version="1.0" encoding="utf-8"?>
+2<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+3    package="com.auramusic.app"
+4    android:versionCode="1"
+5    android:versionName="1.0" >
+6
+7    <uses-sdk
+8        android:minSdkVersion="24"
+9        android:targetSdkVersion="34" />
+10
+11    <uses-permission android:name="android.permission.INTERNET" />
+11-->C:\Users\pgran\.gemini\antigravity\playground\synthetic-corona\app\src\main\AndroidManifest.xml:5:5-67
+11-->C:\Users\pgran\.gemini\antigravity\playground\synthetic-corona\app\src\main\AndroidManifest.xml:5:22-64
+12    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+12-->C:\Users\pgran\.gemini\antigravity\playground\synthetic-corona\app\src\main\AndroidManifest.xml:6:5-79
+12-->C:\Users\pgran\.gemini\antigravity\playground\synthetic-corona\app\src\main\AndroidManifest.xml:6:22-76
+13    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+13-->C:\Users\pgran\.gemini\antigravity\playground\synthetic-corona\app\src\main\AndroidManifest.xml:7:5-77
+13-->C:\Users\pgran\.gemini\antigravity\playground\synthetic-corona\app\src\main\AndroidManifest.xml:7:22-74
+14    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+14-->C:\Users\pgran\.gemini\antigravity\playground\synthetic-corona\app\src\main\AndroidManifest.xml:8:5-92
+14-->C:\Users\pgran\.gemini\antigravity\playground\synthetic-corona\app\src\main\AndroidManifest.xml:8:22-89
+15    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+15-->C:\Users\pgran\.gemini\antigravity\playground\synthetic-corona\app\src\main\AndroidManifest.xml:9:5-77
+15-->C:\Users\pgran\.gemini\antigravity\playground\synthetic-corona\app\src\main\AndroidManifest.xml:9:22-74
+16    <uses-permission android:name="android.permission.WAKE_LOCK" />
+16-->C:\Users\pgran\.gemini\antigravity\playground\synthetic-corona\app\src\main\AndroidManifest.xml:10:5-68
+16-->C:\Users\pgran\.gemini\antigravity\playground\synthetic-corona\app\src\main\AndroidManifest.xml:10:22-65
+17    <uses-permission
+17-->C:\Users\pgran\.gemini\antigravity\playground\synthetic-corona\app\src\main\AndroidManifest.xml:11:5-107
+18        android:name="android.permission.READ_EXTERNAL_STORAGE"
+18-->C:\Users\pgran\.gemini\antigravity\playground\synthetic-corona\app\src\main\AndroidManifest.xml:11:22-77
+19        android:maxSdkVersion="32" />
+19-->C:\Users\pgran\.gemini\antigravity\playground\synthetic-corona\app\src\main\AndroidManifest.xml:11:78-104
+20    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+20-->C:\Users\pgran\.gemini\antigravity\playground\synthetic-corona\app\src\main\AndroidManifest.xml:12:5-75
+20-->C:\Users\pgran\.gemini\antigravity\playground\synthetic-corona\app\src\main\AndroidManifest.xml:12:22-72
+21
+22    <permission
+22-->[androidx.core:core:1.13.0] C:\Users\pgran\.gradle\caches\8.9\transforms\94904e6f3403cb1b47b9073f9efd7a32\transformed\core-1.13.0\AndroidManifest.xml:22:5-24:47
+23        android:name="com.auramusic.app.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
+23-->[androidx.core:core:1.13.0] C:\Users\pgran\.gradle\caches\8.9\transforms\94904e6f3403cb1b47b9073f9efd7a32\transformed\core-1.13.0\AndroidManifest.xml:23:9-81
+24        android:protectionLevel="signature" />
+24-->[androidx.core:core:1.13.0] C:\Users\pgran\.gradle\caches\8.9\transforms\94904e6f3403cb1b47b9073f9efd7a32\transformed\core-1.13.0\AndroidManifest.xml:24:9-44
+25
+26    <uses-permission android:name="com.auramusic.app.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION" />
+26-->[androidx.core:core:1.13.0] C:\Users\pgran\.gradle\caches\8.9\transforms\94904e6f3403cb1b47b9073f9efd7a32\transformed\core-1.13.0\AndroidManifest.xml:26:5-97
+26-->[androidx.core:core:1.13.0] C:\Users\pgran\.gradle\caches\8.9\transforms\94904e6f3403cb1b47b9073f9efd7a32\transformed\core-1.13.0\AndroidManifest.xml:26:22-94
+27
+28    <application
+28-->C:\Users\pgran\.gemini\antigravity\playground\synthetic-corona\app\src\main\AndroidManifest.xml:14:5-44:19
+29        android:name="com.auramusic.app.AuraApp"
+29-->C:\Users\pgran\.gemini\antigravity\playground\synthetic-corona\app\src\main\AndroidManifest.xml:15:9-32
+30        android:allowBackup="true"
+30-->C:\Users\pgran\.gemini\antigravity\playground\synthetic-corona\app\src\main\AndroidManifest.xml:16:9-35
+31        android:appComponentFactory="androidx.core.app.CoreComponentFactory"
+31-->[androidx.core:core:1.13.0] C:\Users\pgran\.gradle\caches\8.9\transforms\94904e6f3403cb1b47b9073f9efd7a32\transformed\core-1.13.0\AndroidManifest.xml:28:18-86
+32        android:debuggable="true"
+33        android:extractNativeLibs="false"
+34        android:label="@string/app_name"
+34-->C:\Users\pgran\.gemini\antigravity\playground\synthetic-corona\app\src\main\AndroidManifest.xml:17:9-41
+35        android:networkSecurityConfig="@xml/network_security_config"
+35-->C:\Users\pgran\.gemini\antigravity\playground\synthetic-corona\app\src\main\AndroidManifest.xml:21:9-69
+36        android:supportsRtl="true"
+36-->C:\Users\pgran\.gemini\antigravity\playground\synthetic-corona\app\src\main\AndroidManifest.xml:18:9-35
+37        android:theme="@style/Theme.XploitMusic"
+37-->C:\Users\pgran\.gemini\antigravity\playground\synthetic-corona\app\src\main\AndroidManifest.xml:19:9-49
+38        android:usesCleartextTraffic="false" >
+38-->C:\Users\pgran\.gemini\antigravity\playground\synthetic-corona\app\src\main\AndroidManifest.xml:20:9-45
+39        <activity
+39-->C:\Users\pgran\.gemini\antigravity\playground\synthetic-corona\app\src\main\AndroidManifest.xml:24:9-32:20
+40            android:name="com.auramusic.app.MainActivity"
+40-->C:\Users\pgran\.gemini\antigravity\playground\synthetic-corona\app\src\main\AndroidManifest.xml:25:13-41
+41            android:exported="true"
+41-->C:\Users\pgran\.gemini\antigravity\playground\synthetic-corona\app\src\main\AndroidManifest.xml:26:13-36
+42            android:theme="@style/Theme.XploitMusic" >
+42-->C:\Users\pgran\.gemini\antigravity\playground\synthetic-corona\app\src\main\AndroidManifest.xml:27:13-53
+43            <intent-filter>
+43-->C:\Users\pgran\.gemini\antigravity\playground\synthetic-corona\app\src\main\AndroidManifest.xml:28:13-31:29
+44                <action android:name="android.intent.action.MAIN" />
+44-->C:\Users\pgran\.gemini\antigravity\playground\synthetic-corona\app\src\main\AndroidManifest.xml:29:17-69
+44-->C:\Users\pgran\.gemini\antigravity\playground\synthetic-corona\app\src\main\AndroidManifest.xml:29:25-66
+45
+46                <category android:name="android.intent.category.LAUNCHER" />
+46-->C:\Users\pgran\.gemini\antigravity\playground\synthetic-corona\app\src\main\AndroidManifest.xml:30:17-77
+46-->C:\Users\pgran\.gemini\antigravity\playground\synthetic-corona\app\src\main\AndroidManifest.xml:30:27-74
+47            </intent-filter>
+48        </activity>
+49
+50        <!-- Service for Media3 -->
+51        <service
+51-->C:\Users\pgran\.gemini\antigravity\playground\synthetic-corona\app\src\main\AndroidManifest.xml:35:9-42:19
+52            android:name="com.auramusic.app.data.service.AuraMediaService"
+52-->C:\Users\pgran\.gemini\antigravity\playground\synthetic-corona\app\src\main\AndroidManifest.xml:36:13-58
+53            android:exported="true"
+53-->C:\Users\pgran\.gemini\antigravity\playground\synthetic-corona\app\src\main\AndroidManifest.xml:37:13-36
+54            android:foregroundServiceType="mediaPlayback" >
+54-->C:\Users\pgran\.gemini\antigravity\playground\synthetic-corona\app\src\main\AndroidManifest.xml:38:13-58
+55            <intent-filter>
+55-->C:\Users\pgran\.gemini\antigravity\playground\synthetic-corona\app\src\main\AndroidManifest.xml:39:13-41:29
+56                <action android:name="androidx.media3.session.MediaSessionService" />
+56-->C:\Users\pgran\.gemini\antigravity\playground\synthetic-corona\app\src\main\AndroidManifest.xml:40:17-86
+56-->C:\Users\pgran\.gemini\antigravity\playground\synthetic-corona\app\src\main\AndroidManifest.xml:40:25-83
+57            </intent-filter>
+58        </service>
+59
+60        <activity
+60-->[androidx.compose.ui:ui-tooling-android:1.6.1] C:\Users\pgran\.gradle\caches\8.9\transforms\6e7f74c8cd90adc4a78f18da3837d98b\transformed\jetified-ui-tooling-release\AndroidManifest.xml:23:9-25:39
+61            android:name="androidx.compose.ui.tooling.PreviewActivity"
+61-->[androidx.compose.ui:ui-tooling-android:1.6.1] C:\Users\pgran\.gradle\caches\8.9\transforms\6e7f74c8cd90adc4a78f18da3837d98b\transformed\jetified-ui-tooling-release\AndroidManifest.xml:24:13-71
+62            android:exported="true" />
+62-->[androidx.compose.ui:ui-tooling-android:1.6.1] C:\Users\pgran\.gradle\caches\8.9\transforms\6e7f74c8cd90adc4a78f18da3837d98b\transformed\jetified-ui-tooling-release\AndroidManifest.xml:25:13-36
+63
+64        <provider
+64-->[androidx.emoji2:emoji2:1.3.0] C:\Users\pgran\.gradle\caches\8.9\transforms\0464559b6ac70c8d8ec89451e6fd8df2\transformed\jetified-emoji2-1.3.0\AndroidManifest.xml:24:9-32:20
+65            android:name="androidx.startup.InitializationProvider"
+65-->[androidx.emoji2:emoji2:1.3.0] C:\Users\pgran\.gradle\caches\8.9\transforms\0464559b6ac70c8d8ec89451e6fd8df2\transformed\jetified-emoji2-1.3.0\AndroidManifest.xml:25:13-67
+66            android:authorities="com.auramusic.app.androidx-startup"
+66-->[androidx.emoji2:emoji2:1.3.0] C:\Users\pgran\.gradle\caches\8.9\transforms\0464559b6ac70c8d8ec89451e6fd8df2\transformed\jetified-emoji2-1.3.0\AndroidManifest.xml:26:13-68
+67            android:exported="false" >
+67-->[androidx.emoji2:emoji2:1.3.0] C:\Users\pgran\.gradle\caches\8.9\transforms\0464559b6ac70c8d8ec89451e6fd8df2\transformed\jetified-emoji2-1.3.0\AndroidManifest.xml:27:13-37
+68            <meta-data
+68-->[androidx.emoji2:emoji2:1.3.0] C:\Users\pgran\.gradle\caches\8.9\transforms\0464559b6ac70c8d8ec89451e6fd8df2\transformed\jetified-emoji2-1.3.0\AndroidManifest.xml:29:13-31:52
+69                android:name="androidx.emoji2.text.EmojiCompatInitializer"
+69-->[androidx.emoji2:emoji2:1.3.0] C:\Users\pgran\.gradle\caches\8.9\transforms\0464559b6ac70c8d8ec89451e6fd8df2\transformed\jetified-emoji2-1.3.0\AndroidManifest.xml:30:17-75
+70                android:value="androidx.startup" />
+70-->[androidx.emoji2:emoji2:1.3.0] C:\Users\pgran\.gradle\caches\8.9\transforms\0464559b6ac70c8d8ec89451e6fd8df2\transformed\jetified-emoji2-1.3.0\AndroidManifest.xml:31:17-49
+71            <meta-data
+71-->[androidx.lifecycle:lifecycle-process:2.7.0] C:\Users\pgran\.gradle\caches\8.9\transforms\c976f3606f0b307fa0f2a9fa256254da\transformed\jetified-lifecycle-process-2.7.0\AndroidManifest.xml:29:13-31:52
+72                android:name="androidx.lifecycle.ProcessLifecycleInitializer"
+72-->[androidx.lifecycle:lifecycle-process:2.7.0] C:\Users\pgran\.gradle\caches\8.9\transforms\c976f3606f0b307fa0f2a9fa256254da\transformed\jetified-lifecycle-process-2.7.0\AndroidManifest.xml:30:17-78
+73                android:value="androidx.startup" />
+73-->[androidx.lifecycle:lifecycle-process:2.7.0] C:\Users\pgran\.gradle\caches\8.9\transforms\c976f3606f0b307fa0f2a9fa256254da\transformed\jetified-lifecycle-process-2.7.0\AndroidManifest.xml:31:17-49
+74            <meta-data
+74-->[androidx.profileinstaller:profileinstaller:1.3.1] C:\Users\pgran\.gradle\caches\8.9\transforms\fde42c2f4dfaf89702a113453c2d7112\transformed\jetified-profileinstaller-1.3.1\AndroidManifest.xml:29:13-31:52
+75                android:name="androidx.profileinstaller.ProfileInstallerInitializer"
+75-->[androidx.profileinstaller:profileinstaller:1.3.1] C:\Users\pgran\.gradle\caches\8.9\transforms\fde42c2f4dfaf89702a113453c2d7112\transformed\jetified-profileinstaller-1.3.1\AndroidManifest.xml:30:17-85
+76                android:value="androidx.startup" />
+76-->[androidx.profileinstaller:profileinstaller:1.3.1] C:\Users\pgran\.gradle\caches\8.9\transforms\fde42c2f4dfaf89702a113453c2d7112\transformed\jetified-profileinstaller-1.3.1\AndroidManifest.xml:31:17-49
+77        </provider>
+78
+79        <activity
+79-->[androidx.compose.ui:ui-test-manifest:1.6.1] C:\Users\pgran\.gradle\caches\8.9\transforms\7160f841decac54bc24d6f3605233248\transformed\jetified-ui-test-manifest-1.6.1\AndroidManifest.xml:23:9-25:39
+80            android:name="androidx.activity.ComponentActivity"
+80-->[androidx.compose.ui:ui-test-manifest:1.6.1] C:\Users\pgran\.gradle\caches\8.9\transforms\7160f841decac54bc24d6f3605233248\transformed\jetified-ui-test-manifest-1.6.1\AndroidManifest.xml:24:13-63
+81            android:exported="true" />
+81-->[androidx.compose.ui:ui-test-manifest:1.6.1] C:\Users\pgran\.gradle\caches\8.9\transforms\7160f841decac54bc24d6f3605233248\transformed\jetified-ui-test-manifest-1.6.1\AndroidManifest.xml:25:13-36
+82
+83        <service
+83-->[androidx.room:room-runtime:2.6.1] C:\Users\pgran\.gradle\caches\8.9\transforms\44438aa2e0d1de45390914e0082a9482\transformed\room-runtime-2.6.1\AndroidManifest.xml:24:9-28:63
+84            android:name="androidx.room.MultiInstanceInvalidationService"
+84-->[androidx.room:room-runtime:2.6.1] C:\Users\pgran\.gradle\caches\8.9\transforms\44438aa2e0d1de45390914e0082a9482\transformed\room-runtime-2.6.1\AndroidManifest.xml:25:13-74
+85            android:directBootAware="true"
+85-->[androidx.room:room-runtime:2.6.1] C:\Users\pgran\.gradle\caches\8.9\transforms\44438aa2e0d1de45390914e0082a9482\transformed\room-runtime-2.6.1\AndroidManifest.xml:26:13-43
+86            android:exported="false" />
+86-->[androidx.room:room-runtime:2.6.1] C:\Users\pgran\.gradle\caches\8.9\transforms\44438aa2e0d1de45390914e0082a9482\transformed\room-runtime-2.6.1\AndroidManifest.xml:27:13-37
+87
+88        <receiver
+88-->[androidx.profileinstaller:profileinstaller:1.3.1] C:\Users\pgran\.gradle\caches\8.9\transforms\fde42c2f4dfaf89702a113453c2d7112\transformed\jetified-profileinstaller-1.3.1\AndroidManifest.xml:34:9-52:20
+89            android:name="androidx.profileinstaller.ProfileInstallReceiver"
+89-->[androidx.profileinstaller:profileinstaller:1.3.1] C:\Users\pgran\.gradle\caches\8.9\transforms\fde42c2f4dfaf89702a113453c2d7112\transformed\jetified-profileinstaller-1.3.1\AndroidManifest.xml:35:13-76
+90            android:directBootAware="false"
+90-->[androidx.profileinstaller:profileinstaller:1.3.1] C:\Users\pgran\.gradle\caches\8.9\transforms\fde42c2f4dfaf89702a113453c2d7112\transformed\jetified-profileinstaller-1.3.1\AndroidManifest.xml:36:13-44
+91            android:enabled="true"
+91-->[androidx.profileinstaller:profileinstaller:1.3.1] C:\Users\pgran\.gradle\caches\8.9\transforms\fde42c2f4dfaf89702a113453c2d7112\transformed\jetified-profileinstaller-1.3.1\AndroidManifest.xml:37:13-35
+92            android:exported="true"
+92-->[androidx.profileinstaller:profileinstaller:1.3.1] C:\Users\pgran\.gradle\caches\8.9\transforms\fde42c2f4dfaf89702a113453c2d7112\transformed\jetified-profileinstaller-1.3.1\AndroidManifest.xml:38:13-36
+93            android:permission="android.permission.DUMP" >
+93-->[androidx.profileinstaller:profileinstaller:1.3.1] C:\Users\pgran\.gradle\caches\8.9\transforms\fde42c2f4dfaf89702a113453c2d7112\transformed\jetified-profileinstaller-1.3.1\AndroidManifest.xml:39:13-57
+94            <intent-filter>
+94-->[androidx.profileinstaller:profileinstaller:1.3.1] C:\Users\pgran\.gradle\caches\8.9\transforms\fde42c2f4dfaf89702a113453c2d7112\transformed\jetified-profileinstaller-1.3.1\AndroidManifest.xml:40:13-42:29
+95                <action android:name="androidx.profileinstaller.action.INSTALL_PROFILE" />
+95-->[androidx.profileinstaller:profileinstaller:1.3.1] C:\Users\pgran\.gradle\caches\8.9\transforms\fde42c2f4dfaf89702a113453c2d7112\transformed\jetified-profileinstaller-1.3.1\AndroidManifest.xml:41:17-91
+95-->[androidx.profileinstaller:profileinstaller:1.3.1] C:\Users\pgran\.gradle\caches\8.9\transforms\fde42c2f4dfaf89702a113453c2d7112\transformed\jetified-profileinstaller-1.3.1\AndroidManifest.xml:41:25-88
+96            </intent-filter>
+97            <intent-filter>
+97-->[androidx.profileinstaller:profileinstaller:1.3.1] C:\Users\pgran\.gradle\caches\8.9\transforms\fde42c2f4dfaf89702a113453c2d7112\transformed\jetified-profileinstaller-1.3.1\AndroidManifest.xml:43:13-45:29
+98                <action android:name="androidx.profileinstaller.action.SKIP_FILE" />
+98-->[androidx.profileinstaller:profileinstaller:1.3.1] C:\Users\pgran\.gradle\caches\8.9\transforms\fde42c2f4dfaf89702a113453c2d7112\transformed\jetified-profileinstaller-1.3.1\AndroidManifest.xml:44:17-85
+98-->[androidx.profileinstaller:profileinstaller:1.3.1] C:\Users\pgran\.gradle\caches\8.9\transforms\fde42c2f4dfaf89702a113453c2d7112\transformed\jetified-profileinstaller-1.3.1\AndroidManifest.xml:44:25-82
+99            </intent-filter>
+100            <intent-filter>
+100-->[androidx.profileinstaller:profileinstaller:1.3.1] C:\Users\pgran\.gradle\caches\8.9\transforms\fde42c2f4dfaf89702a113453c2d7112\transformed\jetified-profileinstaller-1.3.1\AndroidManifest.xml:46:13-48:29
+101                <action android:name="androidx.profileinstaller.action.SAVE_PROFILE" />
+101-->[androidx.profileinstaller:profileinstaller:1.3.1] C:\Users\pgran\.gradle\caches\8.9\transforms\fde42c2f4dfaf89702a113453c2d7112\transformed\jetified-profileinstaller-1.3.1\AndroidManifest.xml:47:17-88
+101-->[androidx.profileinstaller:profileinstaller:1.3.1] C:\Users\pgran\.gradle\caches\8.9\transforms\fde42c2f4dfaf89702a113453c2d7112\transformed\jetified-profileinstaller-1.3.1\AndroidManifest.xml:47:25-85
+102            </intent-filter>
+103            <intent-filter>
+103-->[androidx.profileinstaller:profileinstaller:1.3.1] C:\Users\pgran\.gradle\caches\8.9\transforms\fde42c2f4dfaf89702a113453c2d7112\transformed\jetified-profileinstaller-1.3.1\AndroidManifest.xml:49:13-51:29
+104                <action android:name="androidx.profileinstaller.action.BENCHMARK_OPERATION" />
+104-->[androidx.profileinstaller:profileinstaller:1.3.1] C:\Users\pgran\.gradle\caches\8.9\transforms\fde42c2f4dfaf89702a113453c2d7112\transformed\jetified-profileinstaller-1.3.1\AndroidManifest.xml:50:17-95
+104-->[androidx.profileinstaller:profileinstaller:1.3.1] C:\Users\pgran\.gradle\caches\8.9\transforms\fde42c2f4dfaf89702a113453c2d7112\transformed\jetified-profileinstaller-1.3.1\AndroidManifest.xml:50:25-92
+105            </intent-filter>
+106        </receiver>
+107    </application>
+108
+109</manifest>
