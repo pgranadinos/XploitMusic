@@ -18,5 +18,7 @@ sealed class SearchResultItem {
 data class SearchResults(
     val songs: List<Song>,
     val channels: List<SearchResultItem.ChannelResult>,
-    val playlists: List<SearchResultItem.PlaylistResult>
+    val playlists: List<SearchResultItem.PlaylistResult>,
+    /** Categories that failed during search (empty = all succeeded) */
+    val failedCategories: Set<String> = emptySet()
 )

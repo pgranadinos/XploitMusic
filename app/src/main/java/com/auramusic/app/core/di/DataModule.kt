@@ -3,10 +3,12 @@ package com.auramusic.app.core.di
 import com.auramusic.app.data.repository.FavoritesRepositoryImpl
 import com.auramusic.app.data.repository.LocalAudioRepositoryImpl
 import com.auramusic.app.data.repository.PlayerRepositoryImpl
+import com.auramusic.app.data.repository.QueueManagerImpl
 import com.auramusic.app.data.repository.StreamRepositoryImpl
 import com.auramusic.app.domain.repository.FavoritesRepository
 import com.auramusic.app.domain.repository.LocalAudioRepository
 import com.auramusic.app.domain.repository.PlayerRepository
+import com.auramusic.app.domain.repository.QueueManager
 import com.auramusic.app.domain.repository.StreamRepository
 import dagger.Binds
 import dagger.Module
@@ -32,5 +34,9 @@ abstract class DataModule {
     @Binds
     @Singleton
     abstract fun bindLocalAudioRepository(impl: LocalAudioRepositoryImpl): LocalAudioRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindQueueManager(impl: QueueManagerImpl): QueueManager
 }
 

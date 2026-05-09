@@ -5,9 +5,11 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
+import androidx.room.Update
 import com.auramusic.app.data.local.entity.PlaylistEntity
 import com.auramusic.app.data.local.entity.PlaylistSongCrossRef
 import com.auramusic.app.data.local.entity.PlaylistWithSongs
+import com.auramusic.app.data.local.entity.SongEntity
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -26,13 +28,54 @@ interface PlaylistDao {
 
     // --- Song ↔ Playlist ---
 
+    @Query("SELECT MAX(position) FROM playlist_song_cross_ref WHERE playlistId = :playlistId")
+    suspend fun getMaxPosition(playlistId: Long): Int?
+
     @Insert(onConflict = OnConflictStrategy.IGNORE)
-    suspend fun addSongToPlaylist(crossRef: PlaylistSongCrossRef)
+    suspend fun insertPlaylistSongCrossRef(crossRef: PlaylistSongCrossRef)
+
+    @Transaction
+    suspend fun addSongToPlaylist(crossRef: PlaylistSongCrossRef) {
+        val currentMax = getMaxPosition(crossRef.playlistId) ?: -1
+        val finalCrossRef = crossRef.copy(position = currentMax + 1)
+        insertPlaylistSongCrossRef(finalCrossRef)
+    }
+
+    @Query("SELECT * FROM playlist_song_cross_ref WHERE playlistId = :playlistId ORDER BY position ASC")
+    suspend fun getPlaylistCrossRefs(playlistId: Long): List<PlaylistSongCrossRef>
+
+    @Update
+    suspend fun updatePlaylistCrossRefs(crossRefs: List<PlaylistSongCrossRef>)
+
+    @Transaction
+    suspend fun moveSong(playlistId: Long, fromPosition: Int, toPosition: Int) {
+        val currentList = getPlaylistCrossRefs(playlistId).toMutableList()
+        if (fromPosition !in currentList.indices || toPosition !in currentList.indices) return
+        
+        val item = currentList.removeAt(fromPosition)
+        currentList.add(toPosition, item)
+        
+        val updatedList = currentList.mapIndexed { index, ref ->
+            ref.copy(position = index)
+        }
+        updatePlaylistCrossRefs(updatedList)
+    }
 
     @Query("DELETE FROM playlist_song_cross_ref WHERE playlistId = :playlistId AND songId = :songId")
     suspend fun removeSongFromPlaylist(playlistId: Long, songId: String)
 
     // --- Relations ---
+
+    // C6: Corrección Estricta: `@Relation` de Kotlin elimina el ordenamiento custom impuesto
+    // por la columna "position". Esta query estricta hace un join resolviendo matemáticamente
+    // la estructura de UI O(1) en la capa SQLite.
+    @Query("""
+        SELECT songs.* FROM songs 
+        INNER JOIN playlist_song_cross_ref ref ON songs.id = ref.songId 
+        WHERE ref.playlistId = :playlistId 
+        ORDER BY ref.position ASC
+    """)
+    fun getPlaylistSongsOrdered(playlistId: Long): Flow<List<SongEntity>>
 
     @Transaction
     @Query("SELECT * FROM playlists WHERE playlistId = :playlistId")

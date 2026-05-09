@@ -22,4 +22,10 @@ interface FavoritesRepository {
 
     /** Record that a song was played */
     suspend fun recordPlay(song: Song)
+
+    /** Observe recently played songs */
+    fun getRecents(): Flow<List<Song>>
+
+    /** Observe most played songs */
+    fun getMostPlayed(): Flow<List<Song>>
 }

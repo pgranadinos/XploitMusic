@@ -2,19 +2,25 @@ package com.auramusic.app.data.repository
 
 import android.util.Log
 import com.auramusic.app.core.util.Resource
-import com.auramusic.app.data.remote.PipedApi
+import com.auramusic.app.data.remote.AuraBffApi
 import com.auramusic.app.domain.model.SearchResultItem
 import com.auramusic.app.domain.model.SearchResults
 import com.auramusic.app.domain.model.Song
+import com.auramusic.app.domain.provider.ProviderGateway
 import com.auramusic.app.domain.repository.StreamRepository
-import kotlinx.coroutines.Dispatchers
+import com.auramusic.app.core.analytics.AuraAnalyticsLogger
+import kotlinx.coroutines.async
 import kotlinx.coroutines.withContext
-import org.schabi.newpipe.extractor.ServiceList
-import org.schabi.newpipe.extractor.stream.StreamInfo
 import javax.inject.Inject
+import com.auramusic.app.data.remote.AuraHomeFeedResponse
+import com.auramusic.app.data.remote.AuraPlayEventRequest
+import java.util.Locale
+import com.auramusic.app.core.util.RegionUtils
 
 class StreamRepositoryImpl @Inject constructor(
-    private val api: PipedApi
+    private val api: AuraBffApi,
+    private val gateway: ProviderGateway,
+    private val analyticsLogger: AuraAnalyticsLogger
 ) : StreamRepository {
 
     companion object {
@@ -22,272 +28,208 @@ class StreamRepositoryImpl @Inject constructor(
     }
 
     override suspend fun searchSongs(query: String): Resource<List<Song>> {
-        return try {
-            Log.d(TAG, "StreamRepository: Searching songs: $query")
-            val response = api.search(query, filter = "music_songs")
-
-            val songs = response.items
-                .filter { it.type == "stream" }
-                .map { item ->
-                    val videoId = item.url.substringAfter("watch?v=")
-                    Song(
-                        id = videoId,
-                        title = item.title,
-                        artist = item.uploaderName,
-                        thumbnailUrl = item.thumbnail,
-                        durationSeconds = item.duration
-                    )
-                }
-
-            Log.d(TAG, "StreamRepository: Found ${songs.size} songs")
-            Resource.Success(songs)
-        } catch (e: java.io.IOException) {
-            Log.e(TAG, "StreamRepository: Network error: ${e.localizedMessage}", e)
-            Resource.Error("Network error: ${e.localizedMessage}")
-        } catch (e: Exception) {
-            Log.e(TAG, "StreamRepository: Search error: ${e.localizedMessage}", e)
-            Resource.Error("Search error: ${e.localizedMessage}")
-        }
+        val startTime = System.currentTimeMillis()
+        Log.d(TAG, "StreamRepository: Searching songs via ProviderGateway: $query")
+        val result = gateway.search(query)
+        return result.fold(
+            onSuccess = { 
+                analyticsLogger.logSearch(query, true, System.currentTimeMillis() - startTime, it.size)
+                Resource.Success(it) 
+            },
+            onFailure = { 
+                analyticsLogger.logSearch(query, false, System.currentTimeMillis() - startTime, 0, true, it.message)
+                Resource.Error(it.message ?: "Search failed") 
+            }
+        )
     }
 
     override suspend fun searchMixed(query: String): Resource<SearchResults> {
+        val startTime = System.currentTimeMillis()
         return try {
-            Log.d(TAG, "StreamRepository: Mixed search: $query")
-
-            // Piped API requires specific filter values – make 3 parallel calls
-            val songs = mutableListOf<Song>()
-            val channels = mutableListOf<SearchResultItem.ChannelResult>()
-            val playlists = mutableListOf<SearchResultItem.PlaylistResult>()
-
-            // 1. Songs (music_songs)
-            try {
-                val songResponse = api.search(query, filter = "music_songs")
-                for (item in songResponse.items) {
-                    val videoId = item.url.substringAfter("watch?v=", "")
-                    if (videoId.isNotEmpty()) {
-                        songs.add(
-                            Song(
-                                id = videoId,
-                                title = item.title,
-                                artist = item.uploaderName,
-                                thumbnailUrl = item.thumbnail,
-                                durationSeconds = item.duration
-                            )
-                        )
-                    }
+            Log.d(TAG, "StreamRepository: Mixed search via Gateway con fallback: $query")
+            // Usar el gateway con fallback automático PIPED→INVIDIOUS→BFF
+            val result = gateway.search(query)
+            result.fold(
+                onSuccess = { songs ->
+                    Log.d(TAG, "StreamRepository: Mixed total — ${songs.size} songs")
+                    analyticsLogger.logSearch(query, true, System.currentTimeMillis() - startTime, songs.size)
+                    Resource.Success(SearchResults(songs, emptyList(), emptyList(), emptySet()))
+                },
+                onFailure = { error ->
+                    Log.w(TAG, "StreamRepository: Gateway search falló, ${error.message}")
+                    analyticsLogger.logSearch(query, false, System.currentTimeMillis() - startTime, 0, true, error.message)
+                    Resource.Error("El servidor de búsqueda no responde. Verifica tu conexión e intenta de nuevo.")
                 }
-                Log.d(TAG, "StreamRepository: Mixed — ${songs.size} songs")
-            } catch (e: Exception) {
-                Log.w(TAG, "StreamRepository: Mixed songs failed: ${e.message}")
-            }
-
-            // 2. Channels
-            try {
-                val channelResponse = api.search(query, filter = "channels")
-                for (item in channelResponse.items) {
-                    channels.add(
-                        SearchResultItem.ChannelResult(
-                            name = item.title,
-                            url = item.url,
-                            thumbnail = item.thumbnail
-                        )
-                    )
-                }
-                Log.d(TAG, "StreamRepository: Mixed — ${channels.size} channels")
-            } catch (e: Exception) {
-                Log.w(TAG, "StreamRepository: Mixed channels failed: ${e.message}")
-            }
-
-            // 3. Playlists
-            try {
-                val playlistResponse = api.search(query, filter = "playlists")
-                for (item in playlistResponse.items) {
-                    playlists.add(
-                        SearchResultItem.PlaylistResult(
-                            name = item.title,
-                            url = item.url,
-                            thumbnail = item.thumbnail,
-                            videoCount = if (item.videos >= 0) item.videos else 0
-                        )
-                    )
-                }
-                Log.d(TAG, "StreamRepository: Mixed — ${playlists.size} playlists")
-            } catch (e: Exception) {
-                Log.w(TAG, "StreamRepository: Mixed playlists failed: ${e.message}")
-            }
-
-            Log.d(TAG, "StreamRepository: Mixed total — ${songs.size} songs, ${channels.size} channels, ${playlists.size} playlists")
-            Resource.Success(SearchResults(songs, channels, playlists))
-        } catch (e: java.io.IOException) {
-            Log.e(TAG, "StreamRepository: Mixed search network error: ${e.localizedMessage}", e)
-            Resource.Error("Network error: ${e.localizedMessage}")
+            )
         } catch (e: Exception) {
+            analyticsLogger.logSearch(query, false, System.currentTimeMillis() - startTime, 0, true, e.localizedMessage)
             Log.e(TAG, "StreamRepository: Mixed search error: ${e.localizedMessage}", e)
-            Resource.Error("Search error: ${e.localizedMessage}")
+            Resource.Error("Error de búsqueda: ${e.localizedMessage}")
         }
     }
 
     override suspend fun getStreamInfo(songId: String): Resource<String> {
-        Log.d(TAG, "StreamRepository: Getting stream for: $songId")
+        val startTime = System.currentTimeMillis()
+        val result = gateway.getStream(songId)
+        val timeMs = System.currentTimeMillis() - startTime
+        return result.fold(
+            onSuccess = { 
+                com.auramusic.app.utils.AppLogger.logPlaybackState(songId, "GET_STREAM_SUCCESS", timeMs)
+                Resource.Success(it) 
+            },
+            onFailure = { 
+                com.auramusic.app.utils.AppLogger.logPlaybackState(songId, "ERROR", timeMs)
+                Resource.Error(it.message ?: "No se pudo obtener el audio del servidor.") 
+            }
+        )
+    }
+    
+    override suspend fun getHomeFeed(): Resource<AuraHomeFeedResponse> {
+        return try {
+            Log.d(TAG, "StreamRepository: Getting HomeFeed via BFF")
+            val response = api.getHomeFeed()
+            Resource.Success(response)
+        } catch (e: Exception) {
+            // Si el BFF falla, construir el feed desde Piped directamente
+            Log.w(TAG, "StreamRepository: BFF HomeFeed falló (${e.localizedMessage}), usando fallback Piped")
+            try {
+                val initialRegion = RegionUtils.normalizeRegion(Locale.getDefault().country)
+                var trendingResult = gateway.getTrending(initialRegion)
+                var activeRegion = initialRegion
 
-        // Strategy 1: Local extraction with NewPipeExtractor
-        val localResult = tryNewPipeExtraction(songId)
-        if (localResult is Resource.Success) return localResult
-        Log.w(TAG, "StreamRepository: NewPipe failed, trying Piped API...")
+                // Cascading Fallback
+                if (trendingResult.isFailure) {
+                    val fallbacks = RegionUtils.getFallbackRegions(initialRegion)
+                    for (fallbackRegion in fallbacks) {
+                        Log.w(TAG, "StreamRepository: getTrending failed for $activeRegion, trying fallback: $fallbackRegion")
+                        trendingResult = gateway.getTrending(fallbackRegion)
+                        if (trendingResult.isSuccess) {
+                            activeRegion = fallbackRegion
+                            break
+                        }
+                        activeRegion = fallbackRegion
+                    }
+                }
 
-        // Strategy 2: Piped API fallback
-        val pipedResult = tryPipedApi(songId)
-        if (pipedResult is Resource.Success) return pipedResult
+                if (trendingResult.isFailure) {
+                    throw Exception("Todas las regiones de contingencia fallaron para Trending.")
+                }
+                
+                val rockResult = gateway.search("rock hits")
+                val popResult = gateway.search("pop hits")
 
-        val localError = (localResult as? Resource.Error)?.message ?: "Unknown"
-        val pipedError = (pipedResult as? Resource.Error)?.message ?: "Unknown"
-        return Resource.Error("Cannot get audio.\nLocal: $localError\nPiped: $pipedError")
+                val toAuraTrack: (Song) -> com.auramusic.app.data.remote.AuraTrack = { s ->
+                    com.auramusic.app.data.remote.AuraTrack(
+                        id = s.id,
+                        title = s.title,
+                        artist = s.artist,
+                        durationSeconds = s.durationSeconds.toInt(),
+                        thumbnailUrl = s.thumbnailUrl
+                    )
+                }
+
+                val trending = trendingResult.getOrNull()?.take(15)?.map(toAuraTrack) ?: emptyList()
+                val rock = rockResult.getOrNull()?.take(10)?.map(toAuraTrack) ?: emptyList()
+                val pop = popResult.getOrNull()?.take(10)?.map(toAuraTrack) ?: emptyList()
+
+                val fallbackFeed = AuraHomeFeedResponse(
+                    carousels = listOf(
+                        com.auramusic.app.data.remote.AuraCarousel("${RegionUtils.getRegionFlag(activeRegion)} Tendencias", "trending", trending),
+                        com.auramusic.app.data.remote.AuraCarousel("🎸 Rock", "genre", rock),
+                        com.auramusic.app.data.remote.AuraCarousel("🎤 Pop", "genre", pop)
+                    )
+                )
+                Log.d(TAG, "StreamRepository: HomeFeed fallback exitoso con Piped")
+                Resource.Success(fallbackFeed)
+            } catch (fallbackEx: Exception) {
+                Log.e(TAG, "StreamRepository: HomeFeed fallback también falló", fallbackEx)
+                Resource.Error("No se pudo cargar el inicio")
+            }
+        }
     }
 
     override suspend fun getRelatedSongs(songId: String): Resource<List<Song>> {
-        return try {
-            Log.d(TAG, "StreamRepository: Getting related songs for: $songId")
-            val response = api.getStream(songId)
-            val related = response.relatedStreams?.mapNotNull { stream ->
-                val videoId = stream.url.substringAfter("watch?v=", "")
-                if (videoId.isNotEmpty() && stream.duration > 0) {
-                    Song(
-                        id = videoId,
-                        title = stream.title,
-                        artist = stream.uploaderName ?: "Unknown",
-                        thumbnailUrl = stream.thumbnail ?: "",
-                        durationSeconds = stream.duration
-                    )
-                } else null
-            } ?: emptyList()
-
-            Log.d(TAG, "StreamRepository: Found ${related.size} related songs")
-            Resource.Success(related)
-        } catch (e: Exception) {
-            Log.e(TAG, "StreamRepository: Related songs error: ${e.localizedMessage}", e)
-            Resource.Error("Error getting related: ${e.localizedMessage}")
-        }
+        Log.d(TAG, "StreamRepository: Getting related songs via ProviderGateway for: $songId")
+        val result = gateway.getRelated(songId)
+        return result.fold(
+            onSuccess = { Resource.Success(it) },
+            onFailure = { Resource.Error(it.message ?: "No se encontraron canciones relacionadas") }
+        )
     }
+
+    // =========================================================================
+    // MÉTODOS MANTENIDOS PROVISIONALMENTE (OBSOLETOS GRACIAS A GetHomeFeed)
+    // Para no romper la UI actual de una sola vez
+    // =========================================================================
 
     override suspend fun getTrending(): Resource<List<Song>> {
-        return try {
-            Log.d(TAG, "StreamRepository: Getting Peru music trending...")
-            val allSongs = mutableListOf<Song>()
-
-            // 1. Peru-specific music searches
-            val peruQueries = listOf(
-                "Top Hits Peru 2025",
-                "Música Peruana Tendencias",
-                "Reggaeton Peru Mix 2025"
-            )
-            for (query in peruQueries) {
-                try {
-                    val response = api.search(query, "music_songs")
-                    val songs = response.items.mapNotNull { item ->
-                        val videoId = item.url.substringAfter("watch?v=", "")
-                        if (videoId.isNotEmpty()) {
-                            Song(
-                                id = videoId,
-                                title = item.title,
-                                artist = item.uploaderName,
-                                thumbnailUrl = item.thumbnail,
-                                durationSeconds = item.duration
-                            )
-                        } else null
-                    }
-                    allSongs.addAll(songs)
-                    if (allSongs.size >= 15) break
-                } catch (e: Exception) {
-                    Log.w(TAG, "StreamRepository: Peru search '$query' failed: ${e.message}")
-                }
+        val startTime = System.currentTimeMillis()
+        val initialRegion = RegionUtils.normalizeRegion(Locale.getDefault().country)
+        var result = gateway.getTrending(initialRegion)
+        
+        if (result.isFailure) {
+            val fallbacks = RegionUtils.getFallbackRegions(initialRegion)
+            for (fallbackRegion in fallbacks) {
+                com.auramusic.app.utils.AppLogger.logSearch("trending_$initialRegion", false, System.currentTimeMillis() - startTime, "Fallback to $fallbackRegion")
+                result = gateway.getTrending(fallbackRegion)
+                if (result.isSuccess) break
             }
-
-            // 2. Piped trending endpoint with region=PE as complementary source
-            try {
-                val trendingItems = api.getTrending(region = "PE")
-                val trendingSongs = trendingItems.mapNotNull { item ->
-                    val videoId = item.url.substringAfter("watch?v=", "")
-                    if (videoId.isNotEmpty() && item.duration > 0) {
-                        Song(
-                            id = videoId,
-                            title = item.title,
-                            artist = item.uploaderName ?: "Unknown",
-                            thumbnailUrl = item.thumbnail ?: "",
-                            durationSeconds = item.duration
-                        )
-                    } else null
-                }
-                allSongs.addAll(trendingSongs)
-                Log.d(TAG, "StreamRepository: Piped PE trending: ${trendingSongs.size} items")
-            } catch (e: Exception) {
-                Log.w(TAG, "StreamRepository: Piped PE trending failed: ${e.message}")
+        }
+        
+        val timeMs = System.currentTimeMillis() - startTime
+        return result.fold(
+            onSuccess = { 
+                com.auramusic.app.utils.AppLogger.logSearch("trending_final", true, timeMs, resultCount = it.size)
+                Resource.Success(it) 
+            },
+            onFailure = { 
+                com.auramusic.app.utils.AppLogger.logSearch("trending_final", false, timeMs, error = it.message)
+                Resource.Error(it.message ?: "Error cargando tendencias. Intenta de nuevo más tarde.") 
             }
+        )
+    }
 
-            val unique = allSongs.distinctBy { it.id }.take(25)
-            Log.d(TAG, "StreamRepository: Peru trending total: ${unique.size} songs")
-            Resource.Success(unique)
+    override suspend fun getDiscovery(): Resource<List<Song>> {
+       return try {
+            val response = api.getHomeFeed()
+            val discoveryCarousel = response.carousels.find { it.type == "discovery" }
+                // Si no hay 'discovery', usamos la data de Trending
+                ?: response.carousels.find { it.type == "trending" }
+                
+            val songs = discoveryCarousel?.items?.map { it.toSong() } ?: emptyList()
+            Resource.Success(songs)
         } catch (e: Exception) {
-            Log.e(TAG, "StreamRepository: Peru trending error: ${e.localizedMessage}", e)
-            Resource.Error("Peru trending error: ${e.localizedMessage}")
+            Resource.Error(e.localizedMessage ?: "Error cargando descubrimiento")
         }
     }
 
-    private suspend fun tryNewPipeExtraction(songId: String): Resource<String> {
+    override suspend fun getGenreSongs(genre: String): Resource<List<Song>> {
         return try {
-            withContext(Dispatchers.IO) {
-                val youtubeUrl = "https://www.youtube.com/watch?v=$songId"
-                Log.d(TAG, "NewPipe: Extracting from $youtubeUrl")
-                val streamInfo = StreamInfo.getInfo(ServiceList.YouTube, youtubeUrl)
-                val audioStreams = streamInfo.audioStreams
-
-                Log.d(TAG, "NewPipe: Found ${audioStreams.size} audio streams")
-
-                @Suppress("DEPRECATION")
-                val bestStream = audioStreams
-                    .filter { it.url != null }
-                    .let { streams ->
-                        streams.filter { it.format?.name?.contains("M4A", true) == true }
-                            .maxByOrNull { it.bitrate }
-                            ?: streams.maxByOrNull { it.bitrate }
-                    }
-
-                @Suppress("DEPRECATION")
-                if (bestStream?.url != null) {
-                    Log.d(TAG, "NewPipe: Selected - Format: ${bestStream.format}, Bitrate: ${bestStream.bitrate}")
-                    Resource.Success(bestStream.url!!)
-                } else {
-                    Resource.Error("No audio streams found via NewPipe")
-                }
-            }
+            // Realizamos una búsqueda dinámica para no repetir las canciones
+            searchSongs("$genre hits")
         } catch (e: Exception) {
-            Log.e(TAG, "NewPipe: Failed: ${e.javaClass.simpleName}: ${e.message}", e)
-            Resource.Error("NewPipe: ${e.localizedMessage ?: e.javaClass.simpleName}")
+            Resource.Error(e.localizedMessage ?: "Error cargando género")
         }
     }
 
-    private suspend fun tryPipedApi(songId: String): Resource<String> {
-        return try {
-            Log.d(TAG, "Piped: Getting streams for $songId")
-            val response = api.getStream(songId)
-            val audioStreams = response.audioStreams
+    private fun com.auramusic.app.data.remote.AuraTrack.toSong() = Song(
+        id = id,
+        title = title,
+        artist = artist,
+        thumbnailUrl = thumbnailUrl,
+        durationSeconds = durationSeconds.toLong()
+    )
 
-            val bestStream = audioStreams
-                .filter { it.url.isNotBlank() }
-                .let { streams ->
-                    streams.filter { it.format.equals("M4A", ignoreCase = true) }
-                        .maxByOrNull { it.bitrate }
-                        ?: streams.maxByOrNull { it.bitrate }
-                }
+    // Se han eliminado old tryNewPipeExtraction y tryPipedApi
+    // Ya que la lógica de extracción ahora le pertenece exclusivamente al servidor BFF
 
-            if (bestStream != null) {
-                Log.d(TAG, "Piped: Selected - Format: ${bestStream.format}, Bitrate: ${bestStream.bitrate}")
-                Resource.Success(bestStream.url)
-            } else {
-                Resource.Error("No audio streams found via Piped API")
-            }
+    override suspend fun recordTelemetryPlay(songId: String) {
+        try {
+            api.recordPlayEvent(AuraPlayEventRequest(trackId = songId, source = "android_app"))
+            Log.d(TAG, "Llamada a telemetría exitosa para $songId")
         } catch (e: Exception) {
-            Log.e(TAG, "Piped: Failed: ${e.javaClass.simpleName}: ${e.message}", e)
-            Resource.Error("Piped: ${e.localizedMessage ?: e.javaClass.simpleName}")
+            Log.e(TAG, "Telemetría falló: ${e.message}")
+            // Se ignora silenciosamente para no interrumpir al usuario
         }
     }
 }

@@ -51,14 +51,21 @@ class FavoritesRepositoryImpl @Inject constructor(
 
     override suspend fun recordPlay(song: Song) {
         val existing = songDao.getSongById(song.id)
-        if (existing != null) {
-            songDao.updateLastPlayed(song.id, System.currentTimeMillis())
-        } else {
-            songDao.insertSong(
-                song.toEntity(isFavorite = false).copy(
-                    lastPlayedAt = System.currentTimeMillis()
-                )
-            )
+        if (existing == null) {
+            songDao.insertSong(song.toEntity(isFavorite = false))
+        }
+        songDao.recordPlay(song.id, System.currentTimeMillis())
+    }
+
+    override fun getRecents(): Flow<List<Song>> {
+        return songDao.getRecents().map { entities ->
+            entities.map { it.toDomain() }
+        }
+    }
+
+    override fun getMostPlayed(): Flow<List<Song>> {
+        return songDao.getMostPlayed().map { entities ->
+            entities.map { it.toDomain() }
         }
     }
 

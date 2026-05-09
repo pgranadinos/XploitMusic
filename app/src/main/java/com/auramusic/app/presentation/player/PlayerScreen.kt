@@ -1,3 +1,4 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 package com.auramusic.app.presentation.player
 
 import android.graphics.drawable.BitmapDrawable
@@ -15,10 +16,20 @@ import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.PlaylistAdd
+import androidx.compose.material.icons.filled.QueueMusic
+import androidx.compose.material.icons.filled.Repeat
+import androidx.compose.material.icons.filled.RepeatOne
+import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.OfflinePin
+import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -38,21 +49,31 @@ import coil.imageLoader
 import coil.request.ImageRequest
 import coil.request.SuccessResult
 
-@OptIn(ExperimentalMaterial3Api::class)
+// Removed PlayerTab para mudar a BottomSheet UX@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PlayerScreen(
     onBackClick: () -> Unit,
     viewModel: PlayerViewModel = hiltViewModel()
 ) {
     val currentSong by viewModel.currentSong.collectAsState()
+    val downloadState by viewModel.downloadState.collectAsState()
     val isPlaying by viewModel.isPlaying.collectAsState()
-    val currentPosition by viewModel.currentPosition.collectAsState()
+    // Performance: currentPosition has been isolated to sub-components
     val duration by viewModel.duration.collectAsState()
     val isLoadingStream by viewModel.isLoadingStream.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
     val isFavorite by viewModel.isFavorite.collectAsState()
     val autoplayEnabled by viewModel.autoplayEnabled.collectAsState()
+    val isShuffleEnabled by viewModel.isShuffleEnabled.collectAsState()
+    val repeatMode by viewModel.repeatMode.collectAsState()
+    val upNext by viewModel.upNext.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
+    val coroutineScope = rememberCoroutineScope()
+
+    var showQueueSheet by remember { mutableStateOf(false) }
+    var showLyricsSheet by remember { mutableStateOf(false) }
+    var showPlaylistSheet by remember { mutableStateOf(false) }
+    val playlists by viewModel.playlists.collectAsState()
 
     // Dynamic palette colors from album art
     var dominantColor by remember { mutableStateOf(Color(0xFF7C4DFF)) }
@@ -70,6 +91,8 @@ fun PlayerScreen(
     val context = LocalContext.current
     LaunchedEffect(currentSong?.thumbnailUrl) {
         currentSong?.thumbnailUrl?.let { url ->
+            // Performance: Debounce fetching palette on quick skips
+            kotlinx.coroutines.delay(300)
             try {
                 val request = ImageRequest.Builder(context)
                     .data(url).allowHardware(false).size(200).build()
@@ -104,14 +127,11 @@ fun PlayerScreen(
     val song = currentSong!!
 
     val backgroundBrush = Brush.verticalGradient(
-        colors = listOf(
-            animDominant.copy(alpha = 0.7f),
-            animVibrant.copy(alpha = 0.3f),
-            MaterialTheme.colorScheme.background
-        )
+        0.0f to animDominant.copy(alpha = 0.8f),
+        0.55f to MaterialTheme.colorScheme.background,
+        1.0f to MaterialTheme.colorScheme.background
     )
 
-    var showLyrics by remember { mutableStateOf(false) }
     val lyrics by viewModel.lyrics.collectAsState()
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -132,17 +152,24 @@ fun PlayerScreen(
                 }
                 Spacer(modifier = Modifier.weight(1f))
                 Text(
-                    if (showLyrics) "Lyrics" else "Now Playing",
+                    "Now Playing",
                     style = MaterialTheme.typography.titleMedium,
-                    color = Color.White.copy(alpha = 0.8f)
+                    color = Color.White.copy(alpha = 0.9f)
                 )
                 Spacer(modifier = Modifier.weight(1f))
-                TextButton(onClick = { showLyrics = !showLyrics }) {
+                IconButton(onClick = { showQueueSheet = true }) {
+                    Icon(
+                        Icons.Default.QueueMusic,
+                        contentDescription = "Queue",
+                        tint = Color.White.copy(alpha = 0.75f)
+                    )
+                }
+                TextButton(onClick = { showLyricsSheet = true }) {
                     Text(
                         "LYR",
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.Bold,
-                        color = if (showLyrics) animVibrant else Color.White.copy(alpha = 0.6f)
+                        color = Color.White.copy(alpha = 0.75f)
                     )
                 }
             }
@@ -151,57 +178,43 @@ fun PlayerScreen(
 
             // ── Content Area ──
             Box(modifier = Modifier.weight(1f)) {
-                if (showLyrics) {
-                    if (lyrics.isNotEmpty()) {
-                        com.auramusic.app.presentation.components.LyricsView(
-                            lyrics = lyrics,
-                            currentPosition = currentPosition,
-                            onLineClick = { viewModel.seekTo(it) },
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    } else {
-                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Text("No lyrics available", color = Color.White.copy(alpha = 0.5f))
-                        }
-                    }
-                } else {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
+                // ── Cover Always Visible ──
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    // Album Art
+                    AsyncImage(
+                        model = song.thumbnailUrl,
+                        contentDescription = null,
+                        modifier = Modifier
+                            .fillMaxWidth(0.9f)
+                            .aspectRatio(1f)
+                            .shadow(32.dp, RoundedCornerShape(12.dp))
+                            .clip(RoundedCornerShape(12.dp)),
+                        contentScale = ContentScale.Crop
+                    )
+
+                    Spacer(modifier = Modifier.height(32.dp))
+
+                    // Song Title & Artist
+                    Text(
+                        text = song.title,
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Black,
+                        color = Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.fillMaxWidth()
-                    ) {
-                        // Album Art
-                        AsyncImage(
-                            model = song.thumbnailUrl,
-                            contentDescription = null,
-                            modifier = Modifier
-                                .fillMaxWidth(0.85f)
-                                .aspectRatio(1f)
-                                .shadow(24.dp, RoundedCornerShape(16.dp))
-                                .clip(RoundedCornerShape(16.dp)),
-                            contentScale = ContentScale.Crop
-                        )
-
-                        Spacer(modifier = Modifier.height(24.dp))
-
-                        // Song Title & Artist
-                        Text(
-                            text = song.title,
-                            style = MaterialTheme.typography.headlineSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        Text(
-                            text = song.artist,
-                            style = MaterialTheme.typography.titleMedium,
-                            color = Color.White.copy(alpha = 0.7f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
+                    )
+                    Text(
+                        text = song.artist,
+                        style = MaterialTheme.typography.titleLarge,
+                        color = Color.White.copy(alpha = 0.8f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.fillMaxWidth()
+                    )
                 }
 
                 // Loading overlay
@@ -223,20 +236,11 @@ fun PlayerScreen(
             Spacer(modifier = Modifier.height(16.dp))
 
             // ── Seek Bar ──
-            Slider(
-                value = if (duration > 0) currentPosition.toFloat() / duration else 0f,
-                onValueChange = { viewModel.seekTo((it * duration).toLong()) },
-                modifier = Modifier.fillMaxWidth(),
-                colors = SliderDefaults.colors(
-                    thumbColor = animVibrant,
-                    activeTrackColor = animVibrant,
-                    inactiveTrackColor = Color.White.copy(alpha = 0.2f)
-                )
+            IsolatedPlaybackSlider(
+                viewModel = viewModel,
+                duration = duration,
+                animVibrant = animVibrant
             )
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(formatTime(currentPosition), color = Color.White.copy(alpha = 0.6f), style = MaterialTheme.typography.bodySmall)
-                Text(formatTime(duration), color = Color.White.copy(alpha = 0.6f), style = MaterialTheme.typography.bodySmall)
-            }
 
             Spacer(modifier = Modifier.height(8.dp))
 
@@ -252,25 +256,69 @@ fun PlayerScreen(
                     Text(
                         text = "∞",
                         style = MaterialTheme.typography.headlineMedium,
-                        color = if (autoplayEnabled) animVibrant else Color.White.copy(alpha = 0.3f)
+                        color = if (autoplayEnabled) animVibrant else Color.White.copy(alpha = 0.5f)
                     )
                 }
+
+                // Add to Playlist button
+                IconButton(onClick = { showPlaylistSheet = true }) {
+                    Icon(
+                        Icons.Default.PlaylistAdd,
+                        contentDescription = "Add to playlist",
+                        tint = Color.White.copy(alpha = 0.75f),
+                        modifier = Modifier.size(28.dp)
+                    )
+                }
+
+                // Download button
+                AnimatedDownloadButton(
+                    status = downloadState?.status,
+                    progress = downloadState?.progress ?: 0,
+                    onClick = { viewModel.toggleDownload() }
+                )
 
                 // Favorite button
                 AnimatedFavoriteButton(
                     isFavorite = isFavorite,
-                    onClick = { viewModel.toggleFavorite() }
+                    onClick = { 
+                        viewModel.toggleFavorite() 
+                        val newlyFavorited = !isFavorite
+                        coroutineScope.launch {
+                            snackbarHostState.currentSnackbarData?.dismiss()
+                            val result = snackbarHostState.showSnackbar(
+                                message = if (newlyFavorited) "Añadida a favoritos" else "Eliminada de favoritos",
+                                actionLabel = "Deshacer",
+                                duration = SnackbarDuration.Short
+                            )
+                            if (result == SnackbarResult.ActionPerformed) {
+                                viewModel.toggleFavorite()
+                            }
+                        }
+                    }
                 )
             }
 
             Spacer(modifier = Modifier.height(4.dp))
 
-            // Row 2: Previous | Play/Pause | Next — main controls
+            // Row 2: Shuffle | Previous | Play/Pause | Next | Repeat — main controls
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                // Shuffle
+                IconButton(
+                    onClick = { viewModel.toggleShuffle() },
+                    modifier = Modifier.size(48.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Shuffle,
+                        contentDescription = "Shuffle",
+                        tint = if (isShuffleEnabled) animVibrant else Color.White.copy(alpha = 0.5f),
+                        modifier = Modifier.size(28.dp)
+                    )
+                }
+
                 // Skip Previous
                 IconButton(
                     onClick = { viewModel.skipPrevious() },
@@ -284,31 +332,13 @@ fun PlayerScreen(
                     )
                 }
 
-                // Play/Pause with bounce animation
-                val playScale by animateFloatAsState(
-                    targetValue = if (isPlaying) 1f else 0.95f,
-                    animationSpec = spring(
-                        dampingRatio = Spring.DampingRatioMediumBouncy,
-                        stiffness = Spring.StiffnessMedium
-                    ),
-                    label = "playScale"
-                )
-
-                FilledIconButton(
+                // Play/Pause with AuraPlayButton (scaling already baked in or customized)
+                com.auramusic.app.presentation.components.AuraPlayButton(
+                    isPlaying = isPlaying,
                     onClick = { viewModel.togglePlayPause() },
-                    modifier = Modifier.size(72.dp).scale(playScale),
-                    shape = CircleShape,
-                    colors = IconButtonDefaults.filledIconButtonColors(
-                        containerColor = animVibrant,
-                        contentColor = Color.White
-                    )
-                ) {
-                    if (isPlaying) {
-                        Text("❚❚", style = MaterialTheme.typography.headlineMedium)
-                    } else {
-                        Icon(Icons.Default.PlayArrow, null, modifier = Modifier.size(36.dp))
-                    }
-                }
+                    size = 72.dp,
+                    containerColor = animVibrant
+                )
 
                 // Skip Next
                 IconButton(
@@ -322,6 +352,21 @@ fun PlayerScreen(
                         modifier = Modifier.size(36.dp)
                     )
                 }
+
+                // Repeat
+                IconButton(
+                    onClick = { viewModel.toggleRepeat() },
+                    modifier = Modifier.size(48.dp)
+                ) {
+                    Icon(
+                        imageVector = if (repeatMode == androidx.media3.common.Player.REPEAT_MODE_ONE)
+                            Icons.Default.RepeatOne else Icons.Default.Repeat,
+                        contentDescription = "Repeat",
+                        tint = if (repeatMode != androidx.media3.common.Player.REPEAT_MODE_OFF)
+                            animVibrant else Color.White.copy(alpha = 0.5f),
+                        modifier = Modifier.size(28.dp)
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(24.dp))
@@ -333,6 +378,72 @@ fun PlayerScreen(
             modifier = Modifier.align(Alignment.BottomCenter)
         )
     }
+
+    // Add to Playlist BottomSheet
+    if (showPlaylistSheet) {
+        AddToPlaylistSheet(
+            playlists = playlists,
+            onAddToPlaylist = { playlistId, playlistName ->
+                viewModel.addCurrentSongToPlaylist(playlistId)
+                showPlaylistSheet = false
+                coroutineScope.launch {
+                    snackbarHostState.currentSnackbarData?.dismiss()
+                    snackbarHostState.showSnackbar(
+                        message = "Añadida a \"$playlistName\"",
+                        duration = SnackbarDuration.Short
+                    )
+                }
+            },
+            onCreateAndAdd = { name ->
+                viewModel.createPlaylistAndAddSong(name)
+                showPlaylistSheet = false
+                coroutineScope.launch {
+                    snackbarHostState.currentSnackbarData?.dismiss()
+                    snackbarHostState.showSnackbar(
+                        message = "Creada \"$name\" y canción añadida",
+                        duration = SnackbarDuration.Short
+                    )
+                }
+            },
+            onDismiss = { showPlaylistSheet = false }
+        )
+    }
+
+    // Modal Queue
+    if (showQueueSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showQueueSheet = false },
+            containerColor = MaterialTheme.colorScheme.background,
+            modifier = Modifier.fillMaxHeight(0.9f)
+        ) {
+            QueueView(
+                upNext = upNext,
+                onMove = { from, to -> viewModel.moveSongInQueue(from, to) },
+                onRemove = { idx -> viewModel.removeSongFromQueue(idx) },
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+    }
+
+    // Modal Lyrics
+    if (showLyricsSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showLyricsSheet = false },
+            containerColor = animDominant, // Use palette dominant for lyrics BG
+            modifier = Modifier.fillMaxHeight(0.9f)
+        ) {
+            if (lyrics.isNotEmpty()) {
+                IsolatedLyricsView(
+                    viewModel = viewModel,
+                    lyrics = lyrics
+                )
+            } else {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("No se encontraron letras", color = Color.White.copy(alpha = 0.7f))
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -342,16 +453,16 @@ private fun AnimatedFavoriteButton(
 ) {
     var animateTrigger by remember { mutableStateOf(false) }
     val scale by animateFloatAsState(
-        targetValue = if (animateTrigger) 1.4f else 1f,
+        targetValue = if (animateTrigger) 1.6f else 1f,
         animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessLow
+            dampingRatio = Spring.DampingRatioHighBouncy,
+            stiffness = Spring.StiffnessMedium
         ),
         finishedListener = { animateTrigger = false },
         label = "favoriteScale"
     )
     val tint by animateColorAsState(
-        targetValue = if (isFavorite) Color(0xFFFF4081) else Color.White.copy(alpha = 0.6f),
+        targetValue = if (isFavorite) Color(0xFFFF4081) else Color.White.copy(alpha = 0.7f),
         animationSpec = tween(300),
         label = "favoriteTint"
     )
@@ -369,9 +480,84 @@ private fun AnimatedFavoriteButton(
     }
 }
 
+@Composable
+private fun AnimatedDownloadButton(
+    status: String?,
+    progress: Int,
+    onClick: () -> Unit
+) {
+    val (icon, tint) = when (status) {
+        "COMPLETED" -> Icons.Default.OfflinePin to Color(0xFF651FFF) // Vibrant color
+        "QUEUED", "DOWNLOADING" -> Icons.Outlined.Download to Color.White.copy(alpha = 0.7f)
+        "FAILED" -> Icons.Default.ErrorOutline to MaterialTheme.colorScheme.error
+        else -> Icons.Outlined.Download to Color.White.copy(alpha = 0.7f)
+    }
+
+    IconButton(onClick = onClick) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                imageVector = icon,
+                contentDescription = "Download",
+                tint = tint,
+                modifier = Modifier.size(28.dp)
+            )
+            if (status == "DOWNLOADING") {
+                CircularProgressIndicator(
+                    progress = { progress / 100f },
+                    color = Color(0xFF651FFF),
+                    modifier = Modifier.size(32.dp),
+                    strokeWidth = 2.dp,
+                    trackColor = Color.Transparent
+                )
+            }
+        }
+    }
+}
+
 fun formatTime(ms: Long): String {
     val totalSeconds = ms / 1000
     val minutes = totalSeconds / 60
     val seconds = totalSeconds % 60
     return "%02d:%02d".format(minutes, seconds)
 }
+
+@Composable
+private fun IsolatedPlaybackSlider(
+    viewModel: PlayerViewModel,
+    duration: Long,
+    animVibrant: Color
+) {
+    val currentPosition by viewModel.currentPosition.collectAsState()
+    
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Slider(
+            value = if (duration > 0) currentPosition.toFloat() / duration else 0f,
+            onValueChange = { viewModel.seekTo((it * duration).toLong()) },
+            modifier = Modifier.fillMaxWidth(),
+            colors = SliderDefaults.colors(
+                thumbColor = animVibrant,
+                activeTrackColor = animVibrant,
+                inactiveTrackColor = Color.White.copy(alpha = 0.2f)
+            )
+        )
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(formatTime(currentPosition), color = Color.White.copy(alpha = 0.6f), style = MaterialTheme.typography.bodySmall)
+            Text(formatTime(duration), color = Color.White.copy(alpha = 0.6f), style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+@Composable
+private fun IsolatedLyricsView(
+    viewModel: PlayerViewModel,
+    lyrics: List<com.auramusic.app.domain.model.LyricLine>
+) {
+    val currentPosition by viewModel.currentPosition.collectAsState()
+    com.auramusic.app.presentation.components.LyricsView(
+        lyrics = lyrics,
+        currentPosition = currentPosition,
+        onLineClick = { viewModel.seekTo(it) },
+        modifier = Modifier.fillMaxSize()
+    )
+}
+

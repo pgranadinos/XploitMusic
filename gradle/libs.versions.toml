@@ -19,6 +19,8 @@ coil = "2.5.0"
 media3 = "1.2.1"
 palette = "1.0.0"
 newpipeExtractor = "v0.25.2"
+workManager = "2.9.0"
+hiltWork = "1.1.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -35,6 +37,7 @@ androidx-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-toolin
 androidx-ui-test-manifest = { group = "androidx.compose.ui", name = "ui-test-manifest" }
 androidx-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4" }
 androidx-material3 = { group = "androidx.compose.material3", name = "material3" }
+androidx-material-icons-extended = { group = "androidx.compose.material", name = "material-icons-extended" }
 
 # Navigation
 androidx-navigation-compose = { module = "androidx.navigation:navigation-compose", version.ref = "navigationCompose" }
@@ -43,6 +46,8 @@ androidx-navigation-compose = { module = "androidx.navigation:navigation-compose
 hilt-android = { module = "com.google.dagger:hilt-android", version.ref = "hilt" }
 hilt-compiler = { module = "com.google.dagger:hilt-compiler", version.ref = "hilt" }
 androidx-hilt-navigation-compose = { module = "androidx.hilt:hilt-navigation-compose", version.ref = "hiltNavigationCompose" }
+androidx-hilt-work = { module = "androidx.hilt:hilt-work", version.ref = "hiltWork" }
+androidx-hilt-compiler = { module = "androidx.hilt:hilt-compiler", version.ref = "hiltWork" }
 
 # Retrofit & OkHttp
 material = { module = "com.google.android.material:material", version.ref = "material" }
@@ -70,6 +75,9 @@ androidx-palette-ktx = { module = "androidx.palette:palette-ktx", version.ref = 
 
 # NewPipeExtractor
 newpipe-extractor = { module = "com.github.teamnewpipe:NewPipeExtractor", version.ref = "newpipeExtractor" }
+
+# WorkManager
+androidx-work-runtime-ktx = { module = "androidx.work:work-runtime-ktx", version.ref = "workManager" }
 
 [plugins]
 androidApplication = { id = "com.android.application", version.ref = "agp" }

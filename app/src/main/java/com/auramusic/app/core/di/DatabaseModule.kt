@@ -4,8 +4,11 @@ import android.content.ContentResolver
 import android.content.Context
 import androidx.room.Room
 import com.auramusic.app.data.local.AuraDatabase
+import com.auramusic.app.data.local.dao.DownloadDao
 import com.auramusic.app.data.local.dao.PlaylistDao
+import com.auramusic.app.data.local.dao.SearchHistoryDao
 import com.auramusic.app.data.local.dao.SongDao
+import com.auramusic.app.data.local.dao.PlayHistoryDao
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -24,7 +27,9 @@ object DatabaseModule {
             context,
             AuraDatabase::class.java,
             "aura_music.db"
-        ).fallbackToDestructiveMigration().build()
+        ).addMigrations(AuraDatabase.MIGRATION_6_7)
+        .fallbackToDestructiveMigration()
+        .build()
     }
 
     @Provides
@@ -38,8 +43,27 @@ object DatabaseModule {
     }
 
     @Provides
-    @Singleton
+    fun provideSearchHistoryDao(database: AuraDatabase): SearchHistoryDao {
+        return database.searchHistoryDao()
+    }
+
+    @Provides
+    fun provideDownloadDao(database: AuraDatabase): DownloadDao {
+        return database.downloadDao()
+    }
+
+    @Provides
     fun provideContentResolver(@ApplicationContext context: Context): ContentResolver {
         return context.contentResolver
+    }
+
+    @Provides
+    fun providePlayHistoryDao(database: AuraDatabase): PlayHistoryDao {
+        return database.playHistoryDao()
+    }
+
+    @Provides
+    fun provideSpotifyTokenDao(database: AuraDatabase): com.auramusic.app.data.local.dao.SpotifyTokenDao {
+        return database.spotifyTokenDao()
     }
 }

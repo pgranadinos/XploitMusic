@@ -1,5 +1,11 @@
 package com.auramusic.app.presentation.home
 
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -8,29 +14,29 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
-import com.auramusic.app.core.util.Resource
 import com.auramusic.app.domain.model.SearchResultItem
 import com.auramusic.app.domain.model.Song
 import com.auramusic.app.presentation.components.SongListItem
@@ -39,20 +45,9 @@ import com.auramusic.app.presentation.components.SongListItem
 @Composable
 fun HomeScreen(
     onSongClick: (Song, List<Song>) -> Unit,
-    onSearchSongClick: (Song) -> Unit,
     viewModel: HomeViewModel = hiltViewModel()
 ) {
-    val searchQuery by viewModel.searchQuery.collectAsState()
-    val searchResults by viewModel.searchResults.collectAsState()
-    val mixedResults by viewModel.mixedSearchResults.collectAsState()
-    val favorites by viewModel.favorites.collectAsState()
-    val trending by viewModel.trending.collectAsState()
-    val recommended by viewModel.recommended.collectAsState()
-    val recommendedLabel by viewModel.recommendedLabel.collectAsState()
-    val keyboardController = LocalSoftwareKeyboardController.current
-
-    val isSearching = searchQuery.isNotEmpty()
-
+    val homeUiState by viewModel.homeUiState.collectAsState()
     val gradientBrush = Brush.verticalGradient(
         colors = listOf(
             MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
@@ -66,12 +61,19 @@ fun HomeScreen(
                 title = {
                     Text(
                         "XploitMusic",
+                        style = MaterialTheme.typography.headlineSmall,
                         fontWeight = FontWeight.ExtraBold
                     )
                 },
+                actions = {
+                    IconButton(onClick = { /* TODO: Settings */ }) {
+                        Icon(Icons.Default.Settings, contentDescription = "Configuración")
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background.copy(alpha = 0.9f),
-                    titleContentColor = MaterialTheme.colorScheme.primary
+                    containerColor = MaterialTheme.colorScheme.background,
+                    titleContentColor = MaterialTheme.colorScheme.onBackground,
+                    actionIconContentColor = MaterialTheme.colorScheme.onBackground
                 )
             )
         }
@@ -83,169 +85,149 @@ fun HomeScreen(
                 .background(gradientBrush),
             contentPadding = PaddingValues(bottom = 80.dp)
         ) {
-            // Search Bar — search-as-you-type (no button needed)
+            // 0. Greeting
             item {
-                OutlinedTextField(
-                    value = searchQuery,
-                    onValueChange = { viewModel.onSearchQueryChange(it) },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
-                    placeholder = { Text("Buscar canciones, artistas, playlists...") },
-                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                    singleLine = true,
-                    shape = RoundedCornerShape(24.dp),
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                    keyboardActions = KeyboardActions(
-                        onDone = { keyboardController?.hide() }
-                    )
+                val hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
+                val greeting = when {
+                    hour in 5..11 -> "Buenos días"
+                    hour in 12..18 -> "Buenas tardes"
+                    else -> "Buenas noches"
+                }
+                Text(
+                    text = greeting,
+                    style = MaterialTheme.typography.headlineLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onBackground,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
                 )
             }
 
-            if (isSearching) {
-                // Search mode — mixed results
-                val isLoading = mixedResults is Resource.Loading || searchResults is Resource.Loading
-                if (isLoading) {
+            item {
+                Text(
+                    text = "Quick Picks",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onBackground,
+                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp)
+                )
+            }
+
+            // 1. Quick Picks Grid (2x3)
+            when (val state = homeUiState.quickPicks) {
+                is SectionState.Loading -> {
                     item {
-                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp))
-                    }
-                }
-
-                val mixed = mixedResults?.data
-
-                // Songs section
-                val songs = mixed?.songs ?: searchResults?.data ?: emptyList()
-                if (songs.isNotEmpty()) {
-                    item { SectionHeader("🎵 Canciones") }
-                    items(songs) { song ->
-                        SongListItem(
-                            song = song,
-                            onClick = { onSearchSongClick(song) },
-                            modifier = Modifier.padding(horizontal = 8.dp)
-                        )
-                    }
-                }
-
-                // Channels/Artists section
-                val channels = mixed?.channels ?: emptyList()
-                if (channels.isNotEmpty()) {
-                    item { SectionHeader("👤 Artistas") }
-                    items(channels) { channel ->
-                        ChannelListItem(channel = channel)
-                    }
-                }
-
-                // Playlists section
-                val playlists = mixed?.playlists ?: emptyList()
-                if (playlists.isNotEmpty()) {
-                    item { SectionHeader("📋 Playlists") }
-                    items(playlists) { playlist ->
-                        PlaylistListItem(playlist = playlist)
-                    }
-                }
-
-                // No results
-                if (!isLoading && songs.isEmpty() && channels.isEmpty() && playlists.isEmpty() && mixedResults != null) {
-                    item {
-                        Box(
-                            modifier = Modifier.fillMaxWidth().padding(32.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                "No se encontraron resultados",
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                        Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+                            repeat(3) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Box(Modifier.weight(1f).height(60.dp).clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surfaceVariant))
+                                    Box(Modifier.weight(1f).height(60.dp).clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surfaceVariant))
+                                }
+                            }
                         }
                     }
                 }
-            } else {
-                // Discovery mode — 3 sections
-
-                // Section 1: Favorites
-                if (favorites.isNotEmpty()) {
+                is SectionState.Success -> {
                     item {
-                        SectionHeader("❤️ Tus Favoritos")
+                        val chunked = state.data.take(6).chunked(2)
+                        Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+                            chunked.forEach { rowItems ->
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    rowItems.forEach { pick ->
+                                        Card(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .height(60.dp)
+                                                .clickable { 
+                                                    pick.song?.let { onSongClick(it, state.data.mapNotNull { i -> i.song }) } 
+                                                },
+                                            shape = RoundedCornerShape(8.dp),
+                                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f))
+                                        ) {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                AsyncImage(
+                                                    model = pick.imageUrl,
+                                                    contentDescription = null,
+                                                    modifier = Modifier
+                                                        .size(60.dp)
+                                                        .clip(RoundedCornerShape(topStart = 8.dp, bottomStart = 8.dp)),
+                                                    contentScale = ContentScale.Crop
+                                                )
+                                                Text(
+                                                    text = pick.title,
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = MaterialTheme.colorScheme.onSurface,
+                                                    modifier = Modifier.padding(horizontal = 8.dp),
+                                                    maxLines = 2,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+                                        }
+                                    }
+                                    if (rowItems.size == 1) Spacer(Modifier.weight(1f))
+                                }
+                            }
+                        }
                     }
+                }
+                else -> {}
+            }
+
+            // 2. Artist Mixes
+            when (val state = homeUiState.artistMixes) {
+                is SectionState.Loading -> {
+                    item { SectionHeader("🎧 Creado para ti") }
+                    item {
+                        LazyRow(
+                            contentPadding = PaddingValues(horizontal = 16.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) { items(3) { ShimmerSongCard() } }
+                    }
+                }
+                is SectionState.Success -> {
+                    item { SectionHeader("🎧 Creado para ti") }
                     item {
                         LazyRow(
                             contentPadding = PaddingValues(horizontal = 16.dp),
                             horizontalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            items(favorites) { song ->
-                                SongCard(
-                                    song = song,
-                                    onClick = { onSongClick(song, favorites) }
+                            items(state.data) { mix ->
+                                com.auramusic.app.presentation.components.AuraAlbumCard(
+                                    imageUrl = mix.imageUrl,
+                                    title = mix.title,
+                                    subtitle = "Mix",
+                                    onClick = { viewModel.onSearchQueryChange(mix.seedArtist) },
+                                    isCircular = true
                                 )
                             }
                         }
                     }
-                    item { Spacer(modifier = Modifier.height(16.dp)) }
                 }
+                else -> {}
+            }
 
-                // Section 2: Recommendations
-                if (recommended.isNotEmpty()) {
-                    item {
-                        SectionHeader("🎯 $recommendedLabel")
-                    }
+            // 3. Local Trends
+            when (val state = homeUiState.localTrends) {
+                is SectionState.Success -> {
+                    item { SectionHeader("📈 Tendencias en tu región") }
                     item {
                         LazyRow(
                             contentPadding = PaddingValues(horizontal = 16.dp),
                             horizontalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            items(recommended) { song ->
-                                SongCard(
-                                    song = song,
-                                    onClick = { onSongClick(song, recommended) }
-                                )
+                            items(state.data) { song ->
+                                SongCard(song = song, onClick = { onSongClick(song, state.data) })
                             }
                         }
                     }
-                    item { Spacer(modifier = Modifier.height(16.dp)) }
                 }
-
-                // Section 3: Trending
-                item {
-                    SectionHeader("🔥 Tendencias")
-                }
-
-                if (trending.isEmpty()) {
-                    item {
-                        Box(
-                            modifier = Modifier.fillMaxWidth().padding(32.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(32.dp),
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                    }
-                } else {
-                    item {
-                        LazyRow(
-                            contentPadding = PaddingValues(horizontal = 16.dp),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            items(trending.take(8)) { song ->
-                                SongCard(
-                                    song = song,
-                                    onClick = { onSongClick(song, trending) }
-                                )
-                            }
-                        }
-                    }
-                    item { Spacer(modifier = Modifier.height(8.dp)) }
-
-                    // Rest of trending as list
-                    items(trending.drop(8)) { song ->
-                        SongListItem(
-                            song = song,
-                            onClick = { onSongClick(song, trending) },
-                            modifier = Modifier.padding(horizontal = 8.dp)
-                        )
-                    }
-                }
+                else -> {}
             }
         }
     }
@@ -257,131 +239,34 @@ private fun SectionHeader(title: String) {
         text = title,
         style = MaterialTheme.typography.titleLarge,
         fontWeight = FontWeight.Bold,
+        color = MaterialTheme.colorScheme.onBackground,
         modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
     )
 }
 
 @Composable
-fun SongCard(
-    song: Song,
-    onClick: () -> Unit
-) {
+fun SongCard(song: Song, onClick: () -> Unit) {
+    com.auramusic.app.presentation.components.AuraAlbumCard(
+        imageUrl = song.thumbnailUrl,
+        title = song.title,
+        subtitle = song.artist,
+        onClick = onClick
+    )
+}
+
+@Composable
+fun ShimmerSongCard() {
     Card(
-        modifier = Modifier
-            .width(150.dp)
-            .clickable(onClick = onClick),
-        shape = RoundedCornerShape(12.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant
-        )
+        modifier = Modifier.width(150.dp),
+        shape = RoundedCornerShape(12.dp)
     ) {
         Column {
-            AsyncImage(
-                model = song.thumbnailUrl,
-                contentDescription = null,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(1f)
-                    .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp)),
-                contentScale = ContentScale.Crop
-            )
+            Box(Modifier.fillMaxWidth().aspectRatio(1f).background(MaterialTheme.colorScheme.surfaceVariant))
             Column(modifier = Modifier.padding(8.dp)) {
-                Text(
-                    text = song.title,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = song.artist,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                Box(modifier = Modifier.fillMaxWidth().height(16.dp).background(MaterialTheme.colorScheme.surfaceVariant))
+                Spacer(modifier = Modifier.height(8.dp))
+                Box(modifier = Modifier.fillMaxWidth(0.6f).height(12.dp).background(MaterialTheme.colorScheme.surfaceVariant))
             }
         }
-    }
-}
-
-@Composable
-private fun ChannelListItem(channel: SearchResultItem.ChannelResult) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        AsyncImage(
-            model = channel.thumbnail,
-            contentDescription = null,
-            modifier = Modifier
-                .size(48.dp)
-                .clip(CircleShape),
-            contentScale = ContentScale.Crop
-        )
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = channel.name,
-                style = MaterialTheme.typography.bodyLarge,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                text = "Artista",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        Icon(
-            Icons.Default.Person,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(20.dp)
-        )
-    }
-}
-
-@Composable
-private fun PlaylistListItem(playlist: SearchResultItem.PlaylistResult) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        AsyncImage(
-            model = playlist.thumbnail,
-            contentDescription = null,
-            modifier = Modifier
-                .size(48.dp)
-                .clip(RoundedCornerShape(6.dp)),
-            contentScale = ContentScale.Crop
-        )
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = playlist.name,
-                style = MaterialTheme.typography.bodyLarge,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                text = "${playlist.videoCount} canciones",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        Icon(
-            Icons.Default.PlayArrow,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(20.dp)
-        )
     }
 }

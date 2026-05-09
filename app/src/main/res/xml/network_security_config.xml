@@ -1,19 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <!-- Base configuration for all connections -->
-    <base-config cleartextTrafficPermitted="false">
-        <trust-anchors>
-            <!-- Trust standard system certificates -->
-            <certificates src="system" />
-        </trust-anchors>
-    </base-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="true">127.0.0.1</domain>
+        <!-- Retained for emulator compatibility -->
+        <domain includeSubdomains="true">10.0.2.2</domain>
+        <!-- YouTube/Googlevideo CDN for audio streams (often HTTP) -->
+        <domain includeSubdomains="true">googlevideo.com</domain>
+        <!-- Piped/Invidious subdomains fallback -->
+        <domain includeSubdomains="true">piped.mha.fi</domain>
+        <domain includeSubdomains="true">vid.priv.au</domain>
+    </domain-config>
     
-    <!-- Debug-only configuration -->
-    <debug-overrides>
-        <trust-anchors>
-            <!-- Trust standard system certificates and user-added CAs for debugging -->
-            <certificates src="system" />
-            <certificates src="user" />
-        </trust-anchors>
-    </debug-overrides>
+    <base-config cleartextTrafficPermitted="false" />
 </network-security-config>

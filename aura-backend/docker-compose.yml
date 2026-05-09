@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  auramusic-bff:
+    build:
+      context: ./bff-service
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - DB_HOST=postgres-db
+      - REDIS_HOST=redis-cache
+      - JWT_SECRET=super_secret_key_change_me
+    depends_on:
+      redis-cache:
+        condition: service_started
+      postgres-db:
+        condition: service_started
+    networks:
+      - aura-network
+
+  postgres-db:
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: aura_admin
+      POSTGRES_PASSWORD: aura_password
+      POSTGRES_DB: auramusic_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - aura-network
+
+  redis-cache:
+    image: redis:7-alpine
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    networks:
+      - aura-network
+
+volumes:
+  pgdata:
+  redisdata:
+
+networks:
+  aura-network:
+    driver: bridge

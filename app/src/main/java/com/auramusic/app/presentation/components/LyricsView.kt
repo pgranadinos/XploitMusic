@@ -1,16 +1,15 @@
 package com.auramusic.app.presentation.components
 
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -18,8 +17,12 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -41,41 +44,72 @@ fun LyricsView(
     // Auto-scroll to active line
     LaunchedEffect(activeIndex) {
         if (activeIndex >= 0) {
-            listState.animateScrollToItem(activeIndex, scrollOffset = -150) // Offset to center pretty much
+            listState.animateScrollToItem(activeIndex, scrollOffset = -150)
         }
     }
 
-    LazyColumn(
-        state = listState,
-        modifier = modifier,
-        contentPadding = PaddingValues(vertical = 32.dp)
-    ) {
-        itemsIndexed(lyrics) { index, line ->
-            val isActive = index == activeIndex
-            
-            val textColor by animateColorAsState(
-                targetValue = if (isActive) MaterialTheme.colorScheme.onBackground else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
-                label = "textColor"
+    // Edge fade gradient
+    val edgeFade = Modifier
+        .graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)
+        .drawWithContent {
+            drawContent()
+            val fadeHeight = 48.dp.toPx()
+            // Top fade
+            drawRect(
+                brush = Brush.verticalGradient(
+                    colors = listOf(Color.Transparent, Color.Black),
+                    startY = 0f,
+                    endY = fadeHeight
+                ),
+                blendMode = BlendMode.DstIn
             )
-            
-            val scale = if (isActive) 1.1f else 1.0f
+            // Bottom fade
+            drawRect(
+                brush = Brush.verticalGradient(
+                    colors = listOf(Color.Black, Color.Transparent),
+                    startY = size.height - fadeHeight,
+                    endY = size.height
+                ),
+                blendMode = BlendMode.DstIn
+            )
+        }
 
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { onLineClick(line.startTimeMs) }
-                    .padding(vertical = 8.dp, horizontal = 16.dp)
-            ) {
-                Text(
-                    text = line.text,
-                    style = MaterialTheme.typography.titleMedium.copy(
-                        fontSize = (18 * scale).sp,
-                        fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal
-                    ),
-                    color = textColor,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.align(Alignment.Center)
+    Box(modifier = modifier.then(edgeFade)) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(vertical = 48.dp)
+        ) {
+            itemsIndexed(lyrics) { index, line ->
+                val isActive = index == activeIndex
+
+                val textColor by animateColorAsState(
+                    targetValue = if (isActive)
+                        MaterialTheme.colorScheme.onBackground
+                    else
+                        MaterialTheme.colorScheme.onBackground.copy(alpha = 0.35f),
+                    label = "textColor"
                 )
+
+                val scale = if (isActive) 1.1f else 1.0f
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onLineClick(line.startTimeMs) }
+                        .padding(vertical = 8.dp, horizontal = 16.dp)
+                ) {
+                    Text(
+                        text = line.text,
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            fontSize = (18 * scale).sp,
+                            fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal
+                        ),
+                        color = textColor,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.align(Alignment.Center)
+                    )
+                }
             }
         }
     }

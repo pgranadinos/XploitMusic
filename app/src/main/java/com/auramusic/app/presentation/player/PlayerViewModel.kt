@@ -3,25 +3,40 @@ package com.auramusic.app.presentation.player
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.media3.common.Player
 import com.auramusic.app.core.util.Resource
+import com.auramusic.app.data.local.dao.PlaylistDao
+import com.auramusic.app.data.local.dao.SongDao
+import com.auramusic.app.data.local.entity.PlaylistEntity
+import com.auramusic.app.data.local.entity.PlaylistSongCrossRef
+import com.auramusic.app.data.local.entity.SongEntity
+import com.auramusic.app.data.local.entity.DownloadedTrackEntity
+import com.auramusic.app.data.repository.OfflineManager
 import com.auramusic.app.data.service.SkipHandler
 import com.auramusic.app.domain.model.Song
 import com.auramusic.app.domain.repository.FavoritesRepository
 import com.auramusic.app.domain.repository.PlayerRepository
+import com.auramusic.app.domain.repository.QueueManager
 import com.auramusic.app.domain.repository.StreamRepository
 import com.auramusic.app.domain.usecase.GetAudioStreamUseCase
 import com.auramusic.app.domain.usecase.ToggleFavoriteUseCase
+import com.auramusic.app.core.analytics.AuraAnalyticsLogger
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
+import com.auramusic.app.domain.model.PlaybackState
 
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 @HiltViewModel
@@ -32,11 +47,20 @@ class PlayerViewModel @Inject constructor(
     private val toggleFavoriteUseCase: ToggleFavoriteUseCase,
     private val favoritesRepository: FavoritesRepository,
     private val streamRepository: StreamRepository,
-    private val skipHandler: SkipHandler
+    private val skipHandler: SkipHandler,
+    private val playlistDao: PlaylistDao,
+    private val songDao: SongDao,
+    val queueManager: QueueManager,
+    private val offlineManager: OfflineManager,
+    private val analyticsLogger: AuraAnalyticsLogger
 ) : ViewModel() {
+
+    // ── Step 1: Explicit Playback State Machine ──
 
     companion object {
         private const val TAG = "XploitDebug"
+        private const val STREAM_MAX_RETRIES = 2
+        private const val STREAM_INITIAL_DELAY_MS = 500L
     }
 
     private val _currentSong = MutableStateFlow<Song?>(null)
@@ -52,16 +76,36 @@ class PlayerViewModel @Inject constructor(
     // Autoplay queue (from relatedStreams)
     private val _autoplayQueue = MutableStateFlow<List<Song>>(emptyList())
 
-    // Track played song IDs to avoid repeats in autoplay radio
-    private val _playedSongIds = mutableSetOf<String>()
+    // Exposed UpNext queue for UI
+    val upNext: StateFlow<List<Song>> = kotlinx.coroutines.flow.combine(_playlist, _autoplayQueue) { playlist, autoplay ->
+        val upcomingPlaylist = if (playlist.isNotEmpty() && _currentIndex >= 0 && _currentIndex < playlist.size - 1) {
+            playlist.drop(_currentIndex + 1)
+        } else emptyList()
+        upcomingPlaylist + autoplay
+    }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
+    // Track played song IDs to avoid repeats in autoplay radio (Thread-safe to prevent crashes during skip)
+    private val _playedSongIds: MutableSet<String> = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<String, Boolean>())
 
     // Autoplay enabled state
     private val _autoplayEnabled = MutableStateFlow(true)
     val autoplayEnabled = _autoplayEnabled.asStateFlow()
 
-    // Loading state
-    private val _isLoadingStream = MutableStateFlow(false)
-    val isLoadingStream = _isLoadingStream.asStateFlow()
+    // Shuffle & Repeat states
+    private val _isShuffleEnabled = MutableStateFlow(false)
+    val isShuffleEnabled = _isShuffleEnabled.asStateFlow()
+
+    private val _repeatMode = MutableStateFlow(Player.REPEAT_MODE_OFF)
+    val repeatMode: StateFlow<Int> = _repeatMode.asStateFlow()
+
+    // ── Step 1+2: State-based playback tracking ──
+    private val _playbackState = MutableStateFlow<PlaybackState>(PlaybackState.Idle)
+    val playbackState: StateFlow<PlaybackState> = _playbackState.asStateFlow()
+
+    // Derived loading state for backward compat with UI
+    val isLoadingStream: StateFlow<Boolean> = _playbackState
+        .map { it is PlaybackState.Buffering }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     // Error message
     private val _errorMessage = MutableStateFlow<String?>(null)
@@ -70,12 +114,28 @@ class PlayerViewModel @Inject constructor(
     // Track the pre-fetched next song so we can update _currentSong on transition
     private var _prefetchedNextSong: Song? = null
     private var _prefetchJob: Job? = null
+    
+    // Performance: Job to debounce heavy DB/Network loads on quick skips
+    private var _transitionDebounceJob: Job? = null
 
     // Job for skip-to-next — cancelled on each new press to prevent race conditions
     private var _skipJob: Job? = null
 
+    // Job for any explicit playInternal launch (playSong/playSingleSong/playHistorySong)
+    // Cancels stale fetches when user navigates quickly
+    private var _playInternalJob: Job? = null
+
+    // Generation counter: increments on every new playInternal start.
+    // Stale HTTP completions check this to avoid overwriting state.
+    @Volatile private var _playGeneration: Long = 0L
+
     // Flag to ignore transitions caused by our own prepare() calls
     private var _ignoringTransition = false
+
+    // History stack for bidirectional navigation (like browser back/forward)
+    // _historyCursor points to current position; -1 = at the "live" head of history
+    private val _historyStack = ArrayDeque<Song>(50)
+    private var _historyCursor = -1  // -1 = at live head (normal playback mode)
 
     // Favorite state — reacts to currentSong changes
     val isFavorite: StateFlow<Boolean> = _currentSong
@@ -84,6 +144,18 @@ class PlayerViewModel @Inject constructor(
             else flowOf(false)
         }
         .stateIn(viewModelScope, SharingStarted.Lazily, false)
+
+    // Download state for current song
+    val downloadState: StateFlow<DownloadedTrackEntity?> = _currentSong
+        .flatMapLatest { song ->
+            if (song != null) {
+                // Re-emits whenever any download changes, then filters to our song
+                offlineManager.getAllDownloads().map { list -> list.find { it.songId == song.id } }
+            } else {
+                flowOf(null)
+            }
+        }
+        .stateIn(viewModelScope, SharingStarted.Lazily, null)
 
     val isPlaying: StateFlow<Boolean> = playerRepository.isPlaying
         .stateIn(viewModelScope, SharingStarted.Lazily, false)
@@ -95,36 +167,28 @@ class PlayerViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.Lazily, 0L)
 
     init {
-        // CRITICAL: Listen for ExoPlayer media item transitions (auto or manual).
-        // This fires when ExoPlayer moves to the next queued item, which is the
-        // primary mechanism for syncing the UI and notification on song change.
+        // CRITICAL FIX: Single Source of Truth from ExoPlayer's mediaItemTransition.
+        // This fires when ExoPlayer successfully loads a new item (manual or auto-skip).
         viewModelScope.launch {
             playerRepository.mediaItemTransition.collect { mediaId ->
-                Log.d(TAG, "PlayerVM: mediaItemTransition — mediaId='$mediaId', ignoring=$_ignoringTransition")
-
-                if (_ignoringTransition) {
-                    // This transition was caused by our own prepare() call — ignore it
-                    _ignoringTransition = false
-                    return@collect
-                }
+                Log.d(TAG, "PlayerVM: mediaItemTransition Event — mediaId='$mediaId'")
 
                 if (mediaId == null) return@collect
 
-                // ExoPlayer auto-transitioned to the pre-fetched next item
-                val prefetched = _prefetchedNextSong
-                if (prefetched != null && prefetched.id == mediaId) {
-                    Log.d(TAG, "PlayerVM: 🎵 Auto-transition to pre-fetched: '${prefetched.title}'")
-                    _prefetchedNextSong = null
-                    onSongTransitioned(prefetched)
+                // Suppress stale ExoPlayer events fired during clearQueue/prepare
+                // to prevent _currentSong reverting to old song while buffering next.
+                if (_ignoringTransition) {
+                    Log.d(TAG, "PlayerVM: Suppressing stale transition during skip: '$mediaId'")
+                    return@collect
+                }
+
+                // Find the song matching the mediaId from predefined queues
+                val song = findSongByMediaId(mediaId)
+                if (song != null) {
+                    Log.d(TAG, "PlayerVM: 🎵 Transition matched known song: '${song.title}'")
+                    onSongTransitioned(song)
                 } else {
-                    // Try matching from playlist or autoplay queue
-                    val matchedSong = findSongByMediaId(mediaId)
-                    if (matchedSong != null) {
-                        Log.d(TAG, "PlayerVM: 🎵 Auto-transition to known song: '${matchedSong.title}'")
-                        onSongTransitioned(matchedSong)
-                    } else {
-                        Log.w(TAG, "PlayerVM: Unknown mediaId in transition: '$mediaId'")
-                    }
+                    Log.w(TAG, "PlayerVM: ⚠️ Transition mediaId unknown: '$mediaId'. UI might desync.")
                 }
             }
         }
@@ -145,11 +209,8 @@ class PlayerViewModel @Inject constructor(
             skipHandler.skipRequests.collect { direction ->
                 when (direction) {
                     SkipHandler.SkipDirection.NEXT -> {
-                        Log.d(TAG, "PlayerVM: SkipHandler → forceSkipToNext()")
-                        // Use same cancellation pattern as UI skipNext
-                        _skipJob?.cancel()
-                        viewModelScope.launch { playerRepository.pause() }
-                        _skipJob = viewModelScope.launch { forceSkipToNext() }
+                        Log.d(TAG, "PlayerVM: SkipHandler → skipNext()")
+                        skipNext()
                     }
                     SkipHandler.SkipDirection.PREVIOUS -> {
                         Log.d(TAG, "PlayerVM: SkipHandler → skipPrevious()")
@@ -158,18 +219,57 @@ class PlayerViewModel @Inject constructor(
                 }
             }
         }
+
+        // Listen for ExoPlayer errors (network failures, decode errors, etc.)
+        // Step 4 (RC-2 fix): Routes through skipNext() which respects the state guard
+        viewModelScope.launch {
+            playerRepository.playerError.collect { errorMsg ->
+                if (errorMsg != null) {
+                    Log.e(TAG, "PlayerVM: Player error received: $errorMsg")
+                    _errorMessage.value = errorMsg
+                    _playbackState.value = PlaybackState.Error(errorMsg)
+                    triggerAutoSkip()
+                }
+            }
+        }
     }
 
     /**
-     * Called when ExoPlayer has auto-transitioned to a new song.
-     * Updates the UI state, fetches lyrics, refreshes related songs, and pre-fetches the next song.
+     * UNIQUE entry point for UI state changes regarding the current song.
+     * Called ONLY when ExoPlayer confirms a transition via mediaItemTransition.
+     *
+     * CRITICAL: Even for same-song (optimistic-update match), we MUST run
+     * _playedSongIds.add() and _currentIndex update to prevent infinite same-song loops.
      */
     private fun onSongTransitioned(song: Song) {
-        _currentSong.value = song
-        _lyrics.value = emptyList()
+        val isSameSong = _currentSong.value?.id == song.id
+        
+        if (!isSameSong) {
+            _currentSong.value = song
+            _lyrics.value = emptyList()
+            _errorMessage.value = null
+        }
+
+        // ALWAYS: release Buffering state on any ExoPlayer-confirmed transition
+        if (_playbackState.value is PlaybackState.Buffering) {
+            _playbackState.value = PlaybackState.Playing(song, 0L)
+            Log.d(TAG, "PlayerVM: Buffering released by transition — state=PLAYING")
+        }
+
+        // ALWAYS: mark as played + update index (prevents same-song prefetch loop)
         _playedSongIds.add(song.id)
 
-        // Update playlist index if applicable
+        // ALWAYS: push to history stack, but ONLY at live head
+        // (don't grow history while navigating backward — that causes infinite append)
+        if (_historyCursor < 0) {
+            val lastInHistory = _historyStack.lastOrNull()
+            if (lastInHistory?.id != song.id) {
+                _historyStack.addLast(song)
+                if (_historyStack.size > 50) _historyStack.removeFirst()
+            }
+        }
+
+        // ALWAYS: update playlist index
         val playlistIndex = _playlist.value.indexOfFirst { it.id == song.id }
         if (playlistIndex >= 0) {
             _currentIndex = playlistIndex
@@ -182,46 +282,88 @@ class PlayerViewModel @Inject constructor(
             }
         }
 
-        // Record play
-        viewModelScope.launch {
-            try {
-                favoritesRepository.recordPlay(song)
-            } catch (e: Exception) {
-                Log.w(TAG, "PlayerVM: recordPlay failed: ${e.message}")
-            }
+        if (isSameSong) {
+            Log.d(TAG, "PlayerVM: Same-song transition (optimistic match) — side effects applied, skipping debounce")
+            return
         }
 
-        // Fetch lyrics in background
-        viewModelScope.launch {
+        // Performance: Debounce heavy operations (DB/Network/Lyrics) by 2 seconds
+        _transitionDebounceJob?.cancel()
+        _transitionDebounceJob = viewModelScope.launch {
+            delay(2000)
+            
+            // Record play locally and in BFF (debounced)
+            try { favoritesRepository.recordPlay(song) } catch (_: Exception) {}
+            try { streamRepository.recordTelemetryPlay(song.id) } catch (_: Exception) {}
+
+            // Fetch lyrics in background (debounced)
             try {
                 val result = getLyricsUseCase(song.title, song.artist, song.durationSeconds.toDouble())
                 if (result is Resource.Success) {
                     val parsed = com.auramusic.app.core.util.LrcParser.parse(result.data?.syncedLyrics)
                     _lyrics.value = parsed
-                    Log.d(TAG, "PlayerVM: Lyrics loaded: ${parsed.size} lines")
+                    Log.d(TAG, "PlayerVM/Perf: Lyrics loaded post-debounce: ${parsed.size} lines")
                 }
-            } catch (e: Exception) {
-                Log.w(TAG, "PlayerVM: Lyrics fetch failed: ${e.message}")
-            }
-        }
+            } catch (_: Exception) {}
 
-        // ALWAYS refresh related songs for the new song (Spotify-like infinite radio)
-        viewModelScope.launch {
+            // Refresh related songs and prefetch (debounced)
             replenishAutoplayQueue(song)
             prefetchNextSong()
+            Log.d(TAG, "PlayerVM/Perf: Finished debounce tasks for ${song.title}")
         }
     }
 
     /**
-     * Tries to find a Song object by mediaId from playlist or autoplay queue.
+     * Tries to find a Song object by mediaId from all possible sources.
      */
     private fun findSongByMediaId(mediaId: String): Song? {
-        return _playlist.value.firstOrNull { it.id == mediaId }
+         if (_currentSong.value?.id == mediaId) return _currentSong.value
+         if (_prefetchedNextSong?.id == mediaId) return _prefetchedNextSong
+
+         return _playlist.value.firstOrNull { it.id == mediaId }
             ?: _autoplayQueue.value.firstOrNull { it.id == mediaId }
+    }
+
+    // ── Editable Queue Actions ──
+    fun moveSongInQueue(fromIndex: Int, toIndex: Int) {
+        val currentUpNext = upNext.value.toMutableList()
+        if (fromIndex in currentUpNext.indices && toIndex in currentUpNext.indices) {
+            val item = currentUpNext.removeAt(fromIndex)
+            currentUpNext.add(toIndex, item)
+            
+            // Flatten into autoplayQueue to preserve order and simplify state
+            val played = if (_playlist.value.isNotEmpty() && _currentIndex >= 0) {
+                 _playlist.value.take(_currentIndex + 1)
+            } else emptyList()
+            
+            _playlist.value = played
+            _autoplayQueue.value = currentUpNext
+        }
+    }
+
+    fun removeSongFromQueue(index: Int) {
+        val currentUpNext = upNext.value.toMutableList()
+        if (index in currentUpNext.indices) {
+            currentUpNext.removeAt(index)
+            
+            val played = if (_playlist.value.isNotEmpty() && _currentIndex >= 0) {
+                 _playlist.value.take(_currentIndex + 1)
+            } else emptyList()
+            
+            _playlist.value = played
+            _autoplayQueue.value = currentUpNext
+        }
     }
 
     fun playSong(song: Song, playlist: List<Song> = emptyList()) {
         Log.d(TAG, "PlayerVM: playSong called: ${song.title} (id=${song.id}), playlist size=${playlist.size}")
+        _autoSkipJob?.cancel()
+        _skipJob?.cancel()
+        _skipJob = null
+        _playInternalJob?.cancel()  // Cancel any stale playInternal
+        _ignoringTransition = false
+        _historyCursor = -1
+        _historyStack.clear()
         if (playlist.isNotEmpty()) {
             _playlist.value = playlist
             _currentIndex = playlist.indexOfFirst { it.id == song.id }
@@ -229,9 +371,27 @@ class PlayerViewModel @Inject constructor(
             _playlist.value = listOf(song)
             _currentIndex = 0
         }
-        // Launch playback in viewModelScope — NOT coroutineScope 
-        viewModelScope.launch {
-            playInternal(song)
+        val generation = ++_playGeneration
+        _playInternalJob = viewModelScope.launch {
+            playInternal(song, generation)
+        }
+    }
+
+    /**
+     * Internal: plays a song from history navigation WITHOUT resetting _historyCursor.
+     * Used by skipPrevious/skipNext in history mode only.
+     */
+    private fun playHistorySong(song: Song, newCursor: Int) {
+        Log.d(TAG, "PlayerVM: playHistorySong cursor=$newCursor → '${song.title}'")
+        _autoSkipJob?.cancel()
+        _skipJob?.cancel()
+        _skipJob = null
+        _playInternalJob?.cancel()  // Cancel stale forceSkipToNext's playInternal
+        _ignoringTransition = false
+        _historyCursor = newCursor
+        val generation = ++_playGeneration
+        _playInternalJob = viewModelScope.launch {
+            playInternal(song, generation)
         }
     }
 
@@ -242,12 +402,19 @@ class PlayerViewModel @Inject constructor(
      */
     fun playSingleSong(song: Song) {
         Log.d(TAG, "PlayerVM: playSingleSong called: ${song.title} (id=${song.id})")
-        _playlist.value = emptyList()  // No playlist — autoplay queue is the source
+        _skipJob?.cancel()
+        _skipJob = null
+        _playInternalJob?.cancel()
+        _ignoringTransition = false
+        _historyCursor = -1
+        _historyStack.clear()
+        _playlist.value = emptyList()
         _currentIndex = -1
         _playedSongIds.clear()
         _playedSongIds.add(song.id)
-        viewModelScope.launch {
-            playInternal(song)
+        val generation = ++_playGeneration
+        _playInternalJob = viewModelScope.launch {
+            playInternal(song, generation)
         }
     }
 
@@ -257,42 +424,80 @@ class PlayerViewModel @Inject constructor(
      * waits for ALL children to complete (including slow getRelatedSongs).
      * Instead, we launch background tasks independently in viewModelScope.
      */
-    private suspend fun playInternal(song: Song) {
-        _currentSong.value = song
-        _lyrics.value = emptyList()
+    private suspend fun playInternal(song: Song, generation: Long = _playGeneration) {
+        // DO NOT mutate _currentSong here. Wait for ExoPlayer to emit transition.
+        Log.d(TAG, "PlayerVM: playInternal command for '${song.title}' gen=$generation. ExoPlayer will take control.")
+        val bufferStartTime = System.currentTimeMillis()
+        analyticsLogger.logPlayAttempt(song.id, "PlayerViewModel")
+        
         _errorMessage.value = null
-        _isLoadingStream.value = true
-        _autoplayQueue.value = emptyList()
-        _prefetchedNextSong = null
+        _playbackState.value = PlaybackState.Buffering(song)
+        _prefetchedNextSong = song // Temporarily hold it so findSongByMediaId can resolve it
         _prefetchJob?.cancel()
 
-        // Mark that the next onMediaItemTransition is caused by our prepare() call
+        // CRITICAL: set _ignoringTransition=true BEFORE clearQueue so the spurious
+        // ExoPlayer STATE_ENDED (fired when queue becomes empty) does NOT trigger autoplayNext.
+        // forceSkipToNext already does this correctly; playInternal was missing it.
         _ignoringTransition = true
 
-        Log.d(TAG, "PlayerVM: playInternal start for '${song.title}'")
-
-        // Pause current playback and clear any previously queued items
+        // Clear existing queues except the playlist we are iterating on
         try {
             playerRepository.pause()
             playerRepository.clearQueue()
         } catch (e: Exception) {
-            Log.w(TAG, "PlayerVM: Pause/clearQueue failed (ok if first play): ${e.message}")
+            Log.w(TAG, "PlayerVM: Pause/clearQueue failed: ${e.message}")
         }
 
         val isLocal = song.id.startsWith("local_")
+        val offlinePath = offlineManager.getOfflineFilePath(song.id)
+
+        // ── OFFLINE DEGRADATION (C5): Play downloaded instance if available ──
+        if (offlinePath != null) {
+            try {
+                Log.d(TAG, "PlayerVM: 📶✅ Degradación Elegante — Jugando archivo offline ($offlinePath)")
+                playerRepository.prepare(offlinePath, song)
+                playerRepository.play()
+                _playbackState.value = PlaybackState.Playing(song, 0L)
+                _errorMessage.value = null
+                val timeMs = System.currentTimeMillis() - bufferStartTime
+                com.auramusic.app.utils.AppLogger.logPlaybackState(song.id, "OFFLINE_PLAY", timeMs)
+                analyticsLogger.logPlaySuccess(song.id, timeMs)
+                
+                // Track usage to avoid LRU Eviction
+                viewModelScope.launch { offlineManager.touchAccess(song.id) }
+            } catch (e: Exception) {
+                Log.e(TAG, "PlayerVM: ❌ Offline playback error: ${e.message}", e)
+                _errorMessage.value = "Error al reproducir archivo offline. Usando red..."
+                _playbackState.value = PlaybackState.Error("Error al reproducir archivo offline")
+            }
+
+            // Still fetch related queue & log DB
+            viewModelScope.launch {
+                try { favoritesRepository.recordPlay(song) } catch (_: Exception) {}
+            }
+            viewModelScope.launch { replenishAutoplayQueue(song) }
+            return
+        }
 
         // ── LOCAL SONG: play directly via content URI ──
         if (isLocal && !song.streamUrl.isNullOrBlank()) {
             try {
                 Log.d(TAG, "PlayerVM: ✅ Local song — using content URI directly")
                 playerRepository.prepare(song.streamUrl!!, song)
+                playerRepository.play()
+                _playbackState.value = PlaybackState.Playing(song, 0L)
                 _errorMessage.value = null
+                val timeMs = System.currentTimeMillis() - bufferStartTime
+                com.auramusic.app.utils.AppLogger.logPlaybackState(song.id, "LOCAL_PLAY", timeMs)
+                analyticsLogger.logPlaySuccess(song.id, timeMs)
             } catch (e: Exception) {
                 Log.e(TAG, "PlayerVM: ❌ Local playback error: ${e.message}", e)
+                val timeMs = System.currentTimeMillis() - bufferStartTime
+                com.auramusic.app.utils.AppLogger.logPlaybackState(song.id, "ERROR", timeMs)
+                analyticsLogger.logPlayError(song.id, e.message ?: "Error local", timeMs)
                 _errorMessage.value = "Error al reproducir archivo local"
                 _ignoringTransition = false
-            } finally {
-                _isLoadingStream.value = false
+                _playbackState.value = PlaybackState.Error("Error al reproducir archivo local")
             }
 
             // Record play in DB
@@ -331,50 +536,81 @@ class PlayerViewModel @Inject constructor(
         }
 
         // 3. Fetch related songs for autoplay queue (shuffled, Spotify-like)
+        // CRITICAL FIX: Do NOT call prefetchNextSong() here to prevent race conditions 
+        // with the ExoPlayer instance prior to the primary stream loading.
         viewModelScope.launch {
             replenishAutoplayQueue(song)
-            prefetchNextSong()
         }
 
-        // 4. MAIN: Fetch stream URL and start playback — this is the critical path
+        // 4. MAIN: Fetch stream URL with retry + start playback
         try {
             Log.d(TAG, "PlayerVM: Fetching stream URL for ${song.id}...")
-            when (val result = getAudioStreamUseCase(song.id)) {
+            // Step 7: Retry with exponential backoff
+            when (val result = getStreamUrlWithRetry(song.id)) {
                 is Resource.Success -> {
+                    // GUARD: If a newer song started loading while we fetched, discard this result.
+                    // Needed because OkHttp blocks the IO thread and can't be truly cancelled.
+                    if (_playGeneration != generation) {
+                        Log.d(TAG, "PlayerVM: stale fetch for '${song.title}' (gen=$generation, current=${_playGeneration}) — discarding")
+                        return
+                    }
                     val streamUrl = result.data
                     if (!streamUrl.isNullOrBlank()) {
                         Log.d(TAG, "PlayerVM: ✅ Stream URL obtained (${streamUrl.take(80)}...)")
-                        Log.d(TAG, "PlayerVM: Calling playerRepository.prepare()...")
                         playerRepository.prepare(streamUrl, song)
-                        Log.d(TAG, "PlayerVM: ✅ prepare() called successfully")
+                        playerRepository.play()
+                        _ignoringTransition = false // Allow the real MediaItemTransition through
+                        _playbackState.value = PlaybackState.Playing(song, 0L)
+                        Log.d(TAG, "PlayerVM: ✅ prepare() + play() — state=PLAYING")
                         _errorMessage.value = null
-
-                        // After playback starts, try to pre-fetch the next song
-                        // from the playlist (autoplay queue may not be ready yet)
+                        analyticsLogger.logPlaySuccess(song.id, 0L)
                         launchPrefetch()
                     } else {
                         Log.e(TAG, "PlayerVM: ❌ Stream URL is null or blank")
-                        _errorMessage.value = "No se encontró la URL del stream"
                         _ignoringTransition = false
+                        _errorMessage.value = "No se encontró el audio. Saltando..."
+                        _playbackState.value = PlaybackState.Error("No se encontró el audio. Saltando...")
+                        analyticsLogger.logPlayError(song.id, "Stream URL blank", 0L)
+                        triggerAutoSkip()
                     }
                 }
                 is Resource.Error -> {
+                    if (_playGeneration != generation) {
+                        Log.d(TAG, "PlayerVM: stale error for '${song.title}' — discarding")
+                        _ignoringTransition = false
+                        return
+                    }
                     Log.e(TAG, "PlayerVM: ❌ Stream error: ${result.message}")
-                    _errorMessage.value = result.message ?: "Error desconocido al obtener audio"
                     _ignoringTransition = false
+                    _errorMessage.value = result.message ?: "Error al obtener audio. Saltando..."
+                    _playbackState.value = PlaybackState.Error(result.message ?: "Error")
+                    analyticsLogger.logPlayError(song.id, result.message ?: "Error stream", 0L)
+                    triggerAutoSkip()
                 }
                 else -> {
-                    Log.e(TAG, "PlayerVM: ❌ Unexpected resource state")
+                    if (_playGeneration != generation) { _ignoringTransition = false; return }
                     _ignoringTransition = false
+                    _playbackState.value = PlaybackState.Error("Error desconocido")
+                    analyticsLogger.logPlayError(song.id, "Unknown error", 0L)
+                    triggerAutoSkip()
                 }
             }
         } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) {
+                _ignoringTransition = false
+                throw e
+            }
             Log.e(TAG, "PlayerVM: ❌ Exception in stream fetch: ${e.javaClass.simpleName}: ${e.message}", e)
-            _errorMessage.value = "Error inesperado: ${e.localizedMessage}"
             _ignoringTransition = false
+            _errorMessage.value = "Error inesperado: ${e.localizedMessage}"
+            _playbackState.value = PlaybackState.Error(e.localizedMessage ?: "Error")
         } finally {
-            _isLoadingStream.value = false
-            Log.d(TAG, "PlayerVM: playInternal complete for '${song.title}'")
+            // If still LOADING (no success/error set above), reset to IDLE
+            if (_playbackState.value is PlaybackState.Buffering) {
+                _ignoringTransition = false
+                _playbackState.value = PlaybackState.Idle
+            }
+            Log.d(TAG, "PlayerVM: playInternal complete for '${song.title}', state=${_playbackState.value}")
         }
     }
 
@@ -411,7 +647,7 @@ class PlayerViewModel @Inject constructor(
         try {
             val artist = song.artist.takeIf { it.isNotBlank() && it != "Unknown" }
             if (artist != null) {
-                val searchQueries = listOf("$artist mix", "$artist radio")
+                val searchQueries = listOf("${artist} songs", "${artist} canciones")
                 val query = searchQueries.random()
                 val searchResult = streamRepository.searchSongs(query)
                 if (searchResult is Resource.Success && !searchResult.data.isNullOrEmpty()) {
@@ -423,10 +659,15 @@ class PlayerViewModel @Inject constructor(
             Log.w(TAG, "PlayerVM: Genre search failed: ${e.message}")
         }
 
-        // De-duplicate, filter played
+        // De-duplicate, filter played, filter Mix/playlist entries (no direct stream URL)
+        val MIX_PATTERN = Regex("^(Mix |Playlist |Best of |Top |Hits |Mix:)", RegexOption.IGNORE_CASE)
         val seenIds = mutableSetOf<String>()
         val uniqueSongs = allNewSongs.filter { s ->
-            s.id != song.id && s.id !in _playedSongIds && seenIds.add(s.id)
+            s.id != song.id
+                && s.id !in _playedSongIds
+                && seenIds.add(s.id)
+                && !MIX_PATTERN.containsMatchIn(s.title) // Exclude YouTube Mix playlists
+                && s.title.length < 120                   // Exclude giant playlist titles
         }
 
         // ── Anti-Artist Clustering: Round-Robin Interleaving ──
@@ -467,6 +708,15 @@ class PlayerViewModel @Inject constructor(
 
         _autoplayQueue.value = existingQueue + brandNew
         Log.d(TAG, "PlayerVM: Autoplay queue replenished: ${_autoplayQueue.value.size} total (${brandNew.size} new, ${groupedByArtist.size} artists)")
+
+        // Step 6 (RC-5 fix): Invalidate stale prefetch if queue changed
+        if (brandNew.isNotEmpty() && _prefetchedNextSong != null) {
+            val nextExpected = getNextSong()
+            if (nextExpected?.id != _prefetchedNextSong?.id) {
+                Log.d(TAG, "PlayerVM: Prefetch invalidated — queue changed, expected=${nextExpected?.title}, prefetched=${_prefetchedNextSong?.title}")
+                _prefetchedNextSong = null
+            }
+        }
     }
 
     /**
@@ -506,15 +756,21 @@ class PlayerViewModel @Inject constructor(
                         playerRepository.addNextMediaItem(streamUrl, nextSong)
                         _prefetchedNextSong = nextSong
                         Log.d(TAG, "PlayerVM: ✅ Pre-fetched and queued '${nextSong.title}'")
+                    } else {
+                        // Blank URL from prefetch — nullify to force full fetch on skip
+                        _prefetchedNextSong = null
+                        Log.w(TAG, "PlayerVM: Pre-fetch: blank URL for '${nextSong.title}', skipping queue")
                     }
                 }
                 is Resource.Error -> {
-                    Log.w(TAG, "PlayerVM: Pre-fetch failed: ${result.message}")
+                    _prefetchedNextSong = null
+                    Log.w(TAG, "PlayerVM: Pre-fetch failed for '${nextSong.id}': ${result.message}")
                 }
-                else -> { /* ignore */ }
+                else -> { _prefetchedNextSong = null }
             }
         } catch (e: Exception) {
-            Log.w(TAG, "PlayerVM: Pre-fetch exception: ${e.message}")
+            _prefetchedNextSong = null
+            Log.w(TAG, "PlayerVM: Pre-fetch exception for '${nextSong.id}': ${e.message}")
         }
     }
 
@@ -565,6 +821,7 @@ class PlayerViewModel @Inject constructor(
             _autoplayQueue.value = queue.filter { it.id != nextFromQueue.id }
             _playedSongIds.add(nextFromQueue.id)
             Log.d(TAG, "PlayerVM: Autoplay from related: ${nextFromQueue.title}")
+            analyticsLogger.logAutoplayStarted(_currentSong.value?.id ?: "none", nextFromQueue.id)
             playInternal(nextFromQueue)
             return
         }
@@ -581,6 +838,7 @@ class PlayerViewModel @Inject constructor(
                     _autoplayQueue.value = fresh.drop(1)
                     _playedSongIds.add(nextSong.id)
                     Log.d(TAG, "PlayerVM: Autoplay from fresh related: ${nextSong.title}")
+                    analyticsLogger.logAutoplayStarted(currentSong.id, nextSong.id)
                     playInternal(nextSong)
                     return
                 }
@@ -598,6 +856,7 @@ class PlayerViewModel @Inject constructor(
                 val nextSong = result.data.firstOrNull { it.id !in _playedSongIds }
                     ?: result.data.first()
                 _playedSongIds.add(nextSong.id)
+                analyticsLogger.logAutoplayStarted(currentSong.id, nextSong.id)
                 playInternal(nextSong)
             } else {
                 Log.w(TAG, "PlayerVM: Autoplay fallback returned no results")
@@ -612,6 +871,23 @@ class PlayerViewModel @Inject constructor(
         Log.d(TAG, "PlayerVM: Autoplay toggled to ${_autoplayEnabled.value}")
     }
 
+    fun toggleShuffle() {
+        _isShuffleEnabled.value = !_isShuffleEnabled.value
+        playerRepository.setShuffleModeEnabled(_isShuffleEnabled.value)
+        Log.d(TAG, "PlayerVM: Shuffle toggled to ${_isShuffleEnabled.value}")
+    }
+
+    fun toggleRepeat() {
+        // Cycle: OFF(0) → ALL(2) → ONE(1) → OFF(0)
+        _repeatMode.value = when (_repeatMode.value) {
+            Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
+            Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
+            else -> Player.REPEAT_MODE_OFF
+        }
+        playerRepository.setRepeatMode(_repeatMode.value)
+        Log.d(TAG, "PlayerVM: Repeat mode changed to ${_repeatMode.value}")
+    }
+
     fun toggleFavorite() {
         val song = _currentSong.value ?: return
         viewModelScope.launch {
@@ -621,6 +897,69 @@ class PlayerViewModel @Inject constructor(
             } catch (e: Exception) {
                 Log.e(TAG, "PlayerVM: toggleFavorite failed: ${e.message}", e)
             }
+        }
+    }
+
+    // ── Offline Degradation UI Triggers (C5) ──
+    fun downloadCurrentSong() {
+        val song = _currentSong.value ?: return
+        offlineManager.downloadTrack(song)
+    }
+
+    fun removeDownload(songId: String? = null) {
+        val id = songId ?: _currentSong.value?.id ?: return
+        viewModelScope.launch {
+            offlineManager.deleteDownload(id)
+        }
+    }
+
+    // ── Playlist Integration (F2.2) ──
+
+    val playlists: StateFlow<List<PlaylistEntity>> = playlistDao.getAllPlaylists()
+        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
+    fun addCurrentSongToPlaylist(playlistId: Long) {
+        val song = _currentSong.value ?: return
+        viewModelScope.launch {
+            // Ensure the song exists in the songs table
+            songDao.upsertNetworkSong(
+                SongEntity(
+                    id = song.id,
+                    title = song.title,
+                    artist = song.artist,
+                    thumbnailUrl = song.thumbnailUrl,
+                    durationSeconds = song.durationSeconds,
+                    streamUrl = song.streamUrl
+                )
+            )
+            playlistDao.addSongToPlaylist(
+                PlaylistSongCrossRef(playlistId = playlistId, songId = song.id)
+            )
+            Log.d(TAG, "PlayerVM: Added '${song.title}' to playlist $playlistId")
+        }
+    }
+
+    fun createPlaylistAndAddSong(name: String) {
+        if (name.isBlank()) return
+        val song = _currentSong.value ?: return
+        viewModelScope.launch {
+            val playlistId = playlistDao.createPlaylist(PlaylistEntity(name = name.trim()))
+            Log.d(TAG, "PlayerVM: Created playlist '$name' with id=$playlistId")
+            // Ensure the song exists in the songs table
+            songDao.upsertNetworkSong(
+                SongEntity(
+                    id = song.id,
+                    title = song.title,
+                    artist = song.artist,
+                    thumbnailUrl = song.thumbnailUrl,
+                    durationSeconds = song.durationSeconds,
+                    streamUrl = song.streamUrl
+                )
+            )
+            playlistDao.addSongToPlaylist(
+                PlaylistSongCrossRef(playlistId = playlistId, songId = song.id)
+            )
+            Log.d(TAG, "PlayerVM: Added '${song.title}' to new playlist '$name'")
         }
     }
 
@@ -646,118 +985,226 @@ class PlayerViewModel @Inject constructor(
     }
 
     fun skipNext() {
-        Log.d(TAG, "PlayerVM: skipNext called (UI button)")
+        Log.d(TAG, "PlayerVM: skipNext called, cursor=$_historyCursor, historySize=${_historyStack.size}")
+        _autoSkipJob?.cancel()
 
-        // 1. Cancel any in-flight skip request (prevents race condition on rapid presses)
+        // CANCEL any in-flight skip before doing anything else
         _skipJob?.cancel()
+        _skipJob = null
+        _ignoringTransition = false // Reset in case previous skip leaked
 
-        // 2. Pause the player IMMEDIATELY so the old song stops
+        // Release any stuck Buffering state
+        if (_playbackState.value is PlaybackState.Buffering) {
+            _playbackState.value = PlaybackState.Idle
+            Log.d(TAG, "PlayerVM: skipNext aborted previous buffering skip, resetting state")
+        }
+
+        // BIDIRECTIONAL NAVIGATION: if we're in "back mode" (cursor set),
+        // go FORWARD through history instead of picking a new song.
+        if (_historyCursor >= 0) {
+            val forwardIdx = _historyCursor + 1
+            if (forwardIdx < _historyStack.size) {
+                val forwardSong = _historyStack[forwardIdx]
+                // Advance cursor; if at live head reset to -1
+                val newCursor = if (forwardIdx == _historyStack.size - 1) -1 else forwardIdx
+                Log.d(TAG, "PlayerVM: skipNext via history forward[$forwardIdx] → '${forwardSong.title}', cursor=$newCursor")
+                _playedSongIds.remove(forwardSong.id)
+                playHistorySong(forwardSong, newCursor)
+                return
+            } else {
+                // Already at live head
+                _historyCursor = -1
+            }
+        }
+
+        // NORMAL MODE: push current to history, pick next new song
+        val previousSong = _currentSong.value
+        if (previousSong != null) {
+            val lastInHistory = _historyStack.lastOrNull()
+            if (lastInHistory?.id != previousSong.id) {
+                _historyStack.addLast(previousSong)
+                if (_historyStack.size > 50) _historyStack.removeFirst()
+            }
+        }
+
+        // OPTIMISTIC UPDATE: show next song immediately while stream fetch runs
+        val nextSongOptimistic = getNextSong()
+        if (nextSongOptimistic != null) {
+            _currentSong.value = nextSongOptimistic
+            _lyrics.value = emptyList()
+            _errorMessage.value = null
+        }
+
+        // Pause old audio immediately
         viewModelScope.launch { playerRepository.pause() }
 
-        // 3. Launch new cancellable skip job
-        _skipJob = viewModelScope.launch {
-            forceSkipToNext()
+        val generation = ++_playGeneration
+        _skipJob = viewModelScope.launch(Dispatchers.IO) {
+            delay(80) // Physical debounce
+
+            val songToSkipTo = getNextSong()
+            withContext(Dispatchers.Main) {
+                if (songToSkipTo != null) {
+                    _playbackState.value = PlaybackState.Buffering(songToSkipTo)
+                }
+            }
+
+            try {
+                forceSkipToNext(generation)
+            } finally {
+                withContext(Dispatchers.Main) {
+                    // Always release suppression flag
+                    _ignoringTransition = false
+                    if (_playbackState.value is PlaybackState.Buffering) {
+                        _playbackState.value = PlaybackState.Idle
+                    }
+                }
+            }
         }
     }
 
     /**
      * Force-skips to the next song immediately.
-     * Called from both the UI skip button and the notification skip handler.
+     * Called from skipNext() on Dispatchers.IO.
      *
-     * This function is designed to be cancellation-safe:
-     * - UI is updated IMMEDIATELY (song title, artwork, loading indicator)
-     * - Stream URL resolution happens after → if cancelled by another skip, no harm done
+     * CRITICAL FIX: Network calls run on IO thread, ExoPlayer calls use
+     * withContext(Main). Loading guard in skipNext() prevents overlapping executions.
+     * If the queue is empty, it force-replenishes synchronously before giving up.
      */
-    private suspend fun forceSkipToNext() {
+    private suspend fun forceSkipToNext(generation: Long = _playGeneration) {
         // 1. If ExoPlayer has a pre-fetched next item, use it directly (instant)
-        if (playerRepository.hasNextMediaItem()) {
+        val hasNext = withContext(Dispatchers.Main) { playerRepository.hasNextMediaItem() }
+        if (hasNext) {
             Log.d(TAG, "PlayerVM: forceSkipToNext — ExoPlayer has next item, using skipToNext()")
-            playerRepository.skipToNext()
+            withContext(Dispatchers.Main) {
+                playerRepository.skipToNext()
+            }
             return
         }
 
         // 2. Pull next song from playlist or autoplay queue
-        val nextSong = getNextSongFromQueue()
-        if (nextSong != null) {
-            Log.d(TAG, "PlayerVM: forceSkipToNext — playing: ${nextSong.title}")
+        var nextSong = getNextSongFromQueue()
 
-            // 3. Update UI IMMEDIATELY so user sees the song changed
-            _currentSong.value = nextSong
-            _lyrics.value = emptyList()
-            _isLoadingStream.value = true
-            _errorMessage.value = null
-            _playedSongIds.add(nextSong.id)
-            _prefetchedNextSong = null
-            _prefetchJob?.cancel()
-            _ignoringTransition = true
+        // 3. If queue is empty, force-replenish synchronously (on IO thread)
+        if (nextSong == null && _currentSong.value != null) {
+            Log.d(TAG, "PlayerVM: forceSkipToNext — queue empty, force-replenishing...")
+            replenishAutoplayQueue(_currentSong.value!!)
+            nextSong = getNextSongFromQueue()
+        }
 
-            // 4. Clear ExoPlayer queue
-            try {
-                playerRepository.clearQueue()
-            } catch (e: Exception) {
-                Log.w(TAG, "PlayerVM: clearQueue failed: ${e.message}")
+        if (nextSong == null) {
+            // 8. Queue still empty after replenishment — fallback to autoplayNext
+            Log.d(TAG, "PlayerVM: forceSkipToNext — queue empty after replenish, falling back to autoplayNext()")
+            autoplayNext()
+            return
+        }
+
+        Log.d(TAG, "PlayerVM: forceSkipToNext — preparing stream fetch for: ${nextSong.title}")
+
+            // Register as prefetched so MediaItemTransition can pick it up when ExoPlayer plays it
+            withContext(Dispatchers.Main) {
+                _prefetchedNextSong = nextSong
+                _prefetchJob?.cancel()
             }
 
-            // 5. Resolve stream URL (this is the cancellable part — if user presses Next again,
-            //    this coroutine gets cancelled and the new one takes over)
+            // 5. Clear ExoPlayer queue + suppress stale transitions (on Main thread)
+            withContext(Dispatchers.Main) {
+                _ignoringTransition = true
+                try {
+                    playerRepository.clearQueue()
+                } catch (e: Exception) {
+                    Log.w(TAG, "PlayerVM: clearQueue failed: ${e.message}")
+                }
+            }
+
+            // 6. Resolve stream URL (network call — runs on IO thread)
             try {
                 val isLocal = nextSong.id.startsWith("local_")
                 if (isLocal && !nextSong.streamUrl.isNullOrBlank()) {
-                    playerRepository.prepare(nextSong.streamUrl!!, nextSong)
+                    withContext(Dispatchers.Main) {
+                        playerRepository.prepare(nextSong.streamUrl!!, nextSong)
+                        playerRepository.play()
+                        _ignoringTransition = false // Allow real transition event through
+                    }
                 } else {
-                    when (val result = getAudioStreamUseCase(nextSong.id)) {
+                    // Step 7: Retry with exponential backoff for skip path too
+                    when (val result = getStreamUrlWithRetry(nextSong.id)) {
                         is Resource.Success -> {
                             val streamUrl = result.data
                             if (!streamUrl.isNullOrBlank()) {
-                                playerRepository.prepare(streamUrl, nextSong)
-                                Log.d(TAG, "PlayerVM: forceSkipToNext — playback started")
+                                withContext(Dispatchers.Main) {
+                                    // Guard: discard if a newer play already started
+                                    if (_playGeneration != generation) {
+                                        Log.d(TAG, "PlayerVM: forceSkipToNext stale gen=$generation, discarding")
+                                        _ignoringTransition = false
+                                        return@withContext
+                                    }
+                                    playerRepository.prepare(streamUrl, nextSong)
+                                    playerRepository.play()
+                                    _playbackState.value = PlaybackState.Playing(nextSong, 0L)
+                                    _ignoringTransition = false
+                                }
+                                Log.d(TAG, "PlayerVM: forceSkipToNext — playback started, state=PLAYING")
                             } else {
-                                _errorMessage.value = "No se encontró la URL del stream"
-                                _ignoringTransition = false
+                                withContext(Dispatchers.Main) {
+                                    _ignoringTransition = false
+                                    _errorMessage.value = "No se encontró la URL del stream"
+                                    _playbackState.value = PlaybackState.Error("No se encontró la URL del stream")
+                                }
                             }
                         }
                         is Resource.Error -> {
-                            _errorMessage.value = result.message ?: "Error al obtener audio"
-                            _ignoringTransition = false
+                            withContext(Dispatchers.Main) {
+                                _ignoringTransition = false
+                                if (_playGeneration == generation) {
+                                    Log.e(TAG, "PlayerVM: forceSkipToNext stream error: ${result.message}")
+                                    _errorMessage.value = result.message ?: "Error al obtener audio"
+                                    _playbackState.value = PlaybackState.Error(result.message ?: "Error")
+                                    triggerAutoSkip() // Auto-advance on fetch failure
+                                }
+                            }
                         }
-                        else -> { _ignoringTransition = false }
+                        else -> {
+                            _ignoringTransition = false
+                            withContext(Dispatchers.Main) {
+                                if (_playGeneration == generation) {
+                                    _playbackState.value = PlaybackState.Error("Unknown")
+                                    triggerAutoSkip()
+                                }
+                            }
+                        }
                     }
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
-                // Job was cancelled by a newer skip press — this is expected, rethrow
                 Log.d(TAG, "PlayerVM: forceSkipToNext cancelled (new skip pressed)")
                 throw e
             } catch (e: Exception) {
                 Log.e(TAG, "PlayerVM: forceSkipToNext stream error: ${e.message}", e)
-                _errorMessage.value = "Error: ${e.localizedMessage}"
-                _ignoringTransition = false
-            } finally {
-                _isLoadingStream.value = false
+                analyticsLogger.logSkipFailed(nextSong.id, e.message ?: "Failure in skip")
+                withContext(Dispatchers.Main) {
+                    _errorMessage.value = "Error: ${e.localizedMessage}"
+                    _playbackState.value = PlaybackState.Error("Error")
+                }
             }
 
-            // 6. Background tasks: lyrics, related songs, prefetch
+            // 7. Background tasks: lyrics, related songs, prefetch
+            val songForBackground = nextSong
             viewModelScope.launch {
-                try { favoritesRepository.recordPlay(nextSong) } catch (_: Exception) {}
+                try { favoritesRepository.recordPlay(songForBackground) } catch (_: Exception) {}
             }
             viewModelScope.launch {
                 try {
-                    val lyricsResult = getLyricsUseCase(nextSong.title, nextSong.artist, nextSong.durationSeconds.toDouble())
+                    val lyricsResult = getLyricsUseCase(songForBackground.title, songForBackground.artist, songForBackground.durationSeconds.toDouble())
                     if (lyricsResult is Resource.Success) {
                         _lyrics.value = com.auramusic.app.core.util.LrcParser.parse(lyricsResult.data?.syncedLyrics)
                     }
                 } catch (_: Exception) {}
             }
             viewModelScope.launch {
-                replenishAutoplayQueue(nextSong)
+                replenishAutoplayQueue(songForBackground)
                 prefetchNextSong()
             }
-            return
         }
-
-        // 5. Queue empty — fall through to autoplayNext which does fresh fetch + fallback
-        Log.d(TAG, "PlayerVM: forceSkipToNext — queue empty, falling back to autoplayNext()")
-        autoplayNext()
-    }
 
     /**
      * Atomically pulls the next song from playlist or autoplay queue.
@@ -796,12 +1243,100 @@ class PlayerViewModel @Inject constructor(
     }
 
     fun skipPrevious() {
-        Log.d(TAG, "PlayerVM: skipPrevious called, index=$_currentIndex")
-        if (_currentIndex > 0) {
-            _currentIndex--
-            playSong(_playlist.value[_currentIndex])
-        } else {
+        Log.d(TAG, "PlayerVM: skipPrevious called, index=$_currentIndex, cursor=$_historyCursor, history=${_historyStack.size}")
+        val pos = currentPosition.value
+
+        // If more than 5s into the song, restart it (Spotify-like behavior)
+        if (pos > 5_000L) {
             seekTo(0)
+            return
+        }
+
+        // Cancel any in-flight skip
+        _skipJob?.cancel()
+        _skipJob = null
+        _ignoringTransition = false
+
+        // Determine current cursor position in history
+        val startIdx = if (_historyCursor >= 0) _historyCursor else _historyStack.size - 1
+        val targetIdx = startIdx - 1
+
+        if (targetIdx >= 0 && targetIdx < _historyStack.size) {
+            val previousSong = _historyStack[targetIdx]
+            Log.d(TAG, "PlayerVM: skipPrevious from history[$targetIdx] → '${previousSong.title}'")
+            _playedSongIds.remove(previousSong.id)
+            playHistorySong(previousSong, targetIdx)  // preserves cursor
+            return
+        }
+
+        // Nothing to go back to — restart current song
+        Log.d(TAG, "PlayerVM: skipPrevious — history exhausted, restarting current song")
+        seekTo(0)
+    }
+
+    /**
+     * Step 7: Stream URL fetch with exponential backoff retry.
+     * Retries up to STREAM_MAX_RETRIES times with delays: 500ms, 1000ms.
+     * This handles transient network failures and Piped API timeouts.
+     */
+    private suspend fun getStreamUrlWithRetry(songId: String): Resource<String> {
+        var lastError: Resource<String> = Resource.Error("Unknown error")
+
+        repeat(STREAM_MAX_RETRIES + 1) { attempt ->
+            if (attempt > 0) {
+                val delayMs = STREAM_INITIAL_DELAY_MS * (1 shl (attempt - 1))
+                Log.d(TAG, "PlayerVM: Stream retry #$attempt after ${delayMs}ms for songId=$songId")
+                delay(delayMs)
+            }
+
+            val result = getAudioStreamUseCase(songId)
+            when (result) {
+                is Resource.Success -> {
+                    if (attempt > 0) {
+                        Log.d(TAG, "PlayerVM: Stream retry #$attempt succeeded for songId=$songId")
+                    }
+                    return result
+                }
+                is Resource.Error -> {
+                    lastError = result
+                    Log.w(TAG, "PlayerVM: Stream attempt #${attempt + 1} failed: ${result.message}")
+                }
+                else -> {}
+            }
+        }
+
+        return lastError
+    }
+
+    // ── Auto-Skip utility for failures ──
+    private var _autoSkipJob: Job? = null
+
+    private fun triggerAutoSkip() {
+        _autoSkipJob?.cancel()
+        _autoSkipJob = viewModelScope.launch {
+            Log.d(TAG, "PlayerVM: ⚠️ Error detectado, saltando automáticamente a la próxima pista en 800ms...")
+            delay(800) // Reduced from 2500ms to match Spotify-like responsiveness
+            if (_playbackState.value is PlaybackState.Error || _playbackState.value is PlaybackState.Idle) {
+                _playbackState.value = PlaybackState.Idle // Reset to allow skipNext to run
+                skipNext()
+            }
+        }
+    }
+
+    // ── User Actions ──
+
+    fun toggleDownload() {
+        val song = _currentSong.value ?: return
+        val currentDownload = downloadState.value
+
+        if (currentDownload != null && currentDownload.status == "COMPLETED") {
+            viewModelScope.launch { offlineManager.deleteDownload(song.id) }
+        } else if (currentDownload != null && (currentDownload.status == "QUEUED" || currentDownload.status == "DOWNLOADING")) {
+            offlineManager.cancelDownload(song.id)
+        } else if (currentDownload != null && currentDownload.status == "FAILED") {
+            offlineManager.retryFailed(song.id)
+        } else {
+            offlineManager.downloadTrack(song)
         }
     }
 }

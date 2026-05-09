@@ -19,6 +19,9 @@ data class ThumbnailDto(
 data class InvidiousVideoDetails(
     val title: String,
     val videoId: String,
+    val author: String = "",           // canal/artista
+    val lengthSeconds: Long = 0L,      // duración en segundos
+    val videoThumbnails: List<ThumbnailDto>? = null,
     val adaptiveFormats: List<AdaptiveFormat>
 )
 

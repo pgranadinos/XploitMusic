@@ -21,4 +21,11 @@ interface PlayerRepository {
     suspend fun hasNextMediaItem(): Boolean
     suspend fun skipToNext()
     fun release()
+
+    // Shuffle & Repeat controls
+    fun setRepeatMode(repeatMode: Int)
+    fun setShuffleModeEnabled(shuffleModeEnabled: Boolean)
+
+    /** Emits user-friendly error messages when ExoPlayer encounters a playback error */
+    val playerError: Flow<String?>
 }

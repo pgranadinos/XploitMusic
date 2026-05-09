@@ -10,22 +10,29 @@ import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 
 private val DarkColorScheme = darkColorScheme(
-    primary = XploitViolet,
-    onPrimary = AuraWhite,
+    primary = AuraPrimaryTheme,
+    onPrimary = AuraOnPrimaryTheme,
     secondary = XploitCyan,
-    tertiary = XploitPink,
-    background = XploitBlack,
-    surface = XploitDarkSurface,
-    surfaceVariant = XploitCardDark,
-    onBackground = AuraWhite,
-    onSurface = AuraWhite,
-    onSurfaceVariant = PurpleGrey80
+    onSecondary = Color(0xFF003544),
+    tertiary = XploitGold,
+    onTertiary = Color(0xFF3B2F00),
+    background = AuraBackground,
+    surface = AuraSurface,
+    surfaceVariant = AuraSurfaceVariant,
+    onBackground = AuraTextPrimary,
+    onSurface = AuraTextPrimary,
+    onSurfaceVariant = AuraTextSecondary,
+    error = AuraErrorTheme,
+    onError = AuraTextPrimary,
+    outline = AuraDivider,
+    outlineVariant = AuraDivider
 )
 
 private val LightColorScheme = lightColorScheme(

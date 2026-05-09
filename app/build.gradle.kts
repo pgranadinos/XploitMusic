@@ -1,3 +1,6 @@
+import java.util.Properties
+import java.io.FileInputStream
+
 plugins {
     alias(libs.plugins.androidApplication)
     alias(libs.plugins.jetbrainsKotlinAndroid)
@@ -8,6 +11,13 @@ plugins {
 // ESTO VA FUERA DE LAS LLAVES (Línea 6 o 7):
 apply(plugin = "kotlin-kapt")
 
+val localProperties = Properties()
+val localPropertiesFile = rootProject.file("local.properties")
+if (localPropertiesFile.exists()) {
+    localProperties.load(FileInputStream(localPropertiesFile))
+}
+val useLocalhostBff = localProperties.getProperty("USE_LOCALHOST_BFF", "false").toBoolean()
+
 android {
     namespace = "com.auramusic.app"
     compileSdk = 34
@@ -16,22 +26,34 @@ android {
         applicationId = "com.auramusic.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
             useSupportLibrary = true
         }
+        buildConfigField("boolean", "ALLOW_LOCALHOST", "false")
+        buildConfigField("String", "BFF_BASE_URL", "\"https://api.piped.private.coffee/\"")
+        buildConfigField("String", "SPOTIFY_CLIENT_ID", "\"${localProperties.getProperty("SPOTIFY_CLIENT_ID", "a1b2c3d4e5f6g7h8")}\"")
     }
 
     buildTypes {
+
+        getByName("debug") {
+            buildConfigField("boolean", "ALLOW_LOCALHOST", useLocalhostBff.toString())
+            val baseUrl = if (useLocalhostBff) "\"http://localhost:8080/api/v1/\"" else "\"https://api.piped.private.coffee/\""
+            buildConfigField("String", "BFF_BASE_URL", baseUrl)
+        }
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            buildConfigField("boolean", "ALLOW_LOCALHOST", "false")
+            buildConfigField("String", "BFF_BASE_URL", "\"https://api.piped.private.coffee/\"")
         }
     }
     compileOptions {
@@ -43,6 +65,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.8" // Verify match with Kotlin version
@@ -51,6 +74,9 @@ android {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
+    }
+    testOptions {
+        unitTests.isReturnDefaultValues = true
     }
 }
 
@@ -64,6 +90,8 @@ dependencies {
     implementation(libs.androidx.ui.graphics)
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
+    implementation(libs.androidx.material.icons.extended)
+    implementation("org.burnoutcrew.composereorderable:reorderable:0.9.6")
     
     // Navigation
     implementation(libs.androidx.navigation.compose)
@@ -96,13 +124,25 @@ dependencies {
     implementation(libs.material)
 
     testImplementation(libs.junit)
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.0")
+    testImplementation("app.cash.turbine:turbine:1.0.0")
+    testImplementation("io.mockk:mockk:1.13.10")
+    testImplementation("com.google.truth:truth:1.4.2")
+    testImplementation("org.robolectric:robolectric:4.11.1")
+    testImplementation("org.mockito:mockito-core:5.8.0")
+    testImplementation("androidx.work:work-testing:2.9.0")
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.ui.test.junit4)
     debugImplementation(libs.androidx.ui.tooling)
-    implementation(libs.androidx.ui.test.manifest)
+    debugImplementation(libs.androidx.ui.test.manifest)
     
-    // NewPipeExtractor
-    implementation(libs.newpipe.extractor)
+    // NewPipeExtractor (REMOVIDO - Lógica movida al Backend BFF)
+    // implementation(libs.newpipe.extractor)
+
+    // WorkManager + Hilt Worker support
+    implementation(libs.androidx.work.runtime.ktx)
+    implementation(libs.androidx.hilt.work)
+    add("kapt", libs.androidx.hilt.compiler)
 }

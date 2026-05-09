@@ -4,15 +4,19 @@ import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.List
-import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.LibraryMusic
+import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
@@ -21,6 +25,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.auramusic.app.core.theme.XploitMusicTheme
+import com.auramusic.app.presentation.components.MiniPlayerBar
 import dagger.hilt.android.AndroidEntryPoint
 
 @AndroidEntryPoint
@@ -32,13 +37,14 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         _openPlayerState.value = isPlayerIntent(intent)
+        handleSpotifyIntent(intent)
         setContent {
             XploitMusicTheme {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    XploitAppNavigation(openPlayerState = _openPlayerState)
+                    XploitAppNavigation(openPlayer = _openPlayerState.value)
                 }
             }
         }
@@ -48,9 +54,20 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        handleSpotifyIntent(intent)
         if (isPlayerIntent(intent)) {
-            // Flip the state to trigger LaunchedEffect re-navigation
             _openPlayerState.value = true
+        }
+    }
+
+    private fun handleSpotifyIntent(intent: Intent?) {
+        if (intent == null) return
+        val data = intent.data
+        if (data != null && data.scheme == "auramusic" && data.host == "spotify" && data.path?.startsWith("/callback") == true) {
+            val code = data.getQueryParameter("code")
+            if (code != null) {
+                com.auramusic.app.presentation.library.SpotifyAuthManager.codeResult.value = code
+            }
         }
     }
 
@@ -80,7 +97,10 @@ private data class BottomNavItem(
 fun XploitAppNavigation(openPlayer: Boolean = false) {
     val navController = rememberNavController()
 
-    // Scope ViewModel to the Activity so it persists across navigation
+    // ── PlayerViewModel scoped to the Activity ───────────────────────────────
+    // This is the single source of truth for playback state. Scoping to the
+    // Activity (not the NavBackStackEntry) guarantees it survives navigation
+    // between Home / Library / Local tabs and configuration changes.
     val context = androidx.compose.ui.platform.LocalContext.current
     val playerViewModel: com.auramusic.app.presentation.player.PlayerViewModel =
         hiltViewModel(context as androidx.activity.ComponentActivity)
@@ -95,46 +115,70 @@ fun XploitAppNavigation(openPlayer: Boolean = false) {
     }
 
     val bottomNavItems = listOf(
-        BottomNavItem("home", "Inicio", Icons.Default.Home),
-        BottomNavItem("library", "Biblioteca", Icons.Default.List),
-        BottomNavItem("local", "Local", Icons.Default.PlayArrow)
+        BottomNavItem("home",    "Inicio",    Icons.Default.Home),
+        BottomNavItem("search",  "Buscar",    Icons.Default.Search),
+        BottomNavItem("library", "Biblioteca", Icons.Default.LibraryMusic)
     )
 
     // Track current route to hide bottom bar on player screen
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route
-    val showBottomBar = currentRoute != "player"
+    val isOnPlayerScreen = currentRoute == "player"
 
     Scaffold(
         bottomBar = {
-            if (showBottomBar) {
-                NavigationBar(
-                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f)
-                ) {
-                    bottomNavItems.forEach { item ->
-                        val selected = navBackStackEntry?.destination?.hierarchy?.any {
-                            it.route == item.route
-                        } == true
+            // Hide the entire bottom bar area when the full player is open
+            if (!isOnPlayerScreen) {
+                Column {
+                    // ── Mini-Player Overlay ───────────────────────────────────────
+                    // Animates in/out based on whether a song is loaded.
+                    // Tapping navigates to the full PlayerScreen.
+                    MiniPlayerBar(
+                        viewModel = playerViewModel,
+                        onTap = {
+                            navController.navigate("player") {
+                                launchSingleTop = true
+                            }
+                        }
+                    )
 
-                        NavigationBarItem(
-                            icon = { Icon(item.icon, contentDescription = item.label) },
-                            label = { Text(item.label) },
-                            selected = selected,
-                            onClick = {
-                                navController.navigate(item.route) {
-                                    popUpTo(navController.graph.findStartDestination().id) {
-                                        saveState = true
+                    // ── Bottom Navigation Bar ─────────────────────────────────────
+                    NavigationBar(
+                        containerColor = MaterialTheme.colorScheme.surface,
+                        tonalElevation = 8.dp
+                    ) {
+                        bottomNavItems.forEach { item ->
+                            val selected = navBackStackEntry?.destination?.hierarchy?.any {
+                                it.route == item.route
+                            } == true
+
+                            NavigationBarItem(
+                                icon = {
+                                    Icon(
+                                        item.icon,
+                                        contentDescription = item.label
+                                    )
+                                },
+                                label = { Text(item.label) },
+                                selected = selected,
+                                onClick = {
+                                    navController.navigate(item.route) {
+                                        popUpTo(navController.graph.findStartDestination().id) {
+                                            saveState = true
+                                        }
+                                        launchSingleTop = true
+                                        restoreState = true
                                     }
-                                    launchSingleTop = true
-                                    restoreState = true
-                                }
-                            },
-                            colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = MaterialTheme.colorScheme.primary,
-                                selectedTextColor = MaterialTheme.colorScheme.primary,
-                                indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                                },
+                                colors = NavigationBarItemDefaults.colors(
+                                    selectedIconColor = MaterialTheme.colorScheme.primary,
+                                    selectedTextColor = MaterialTheme.colorScheme.primary,
+                                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
+                                )
                             )
-                        )
+                        }
                     }
                 }
             }
@@ -150,8 +194,12 @@ fun XploitAppNavigation(openPlayer: Boolean = false) {
                     onSongClick = { song, playlist ->
                         playerViewModel.playSong(song, playlist)
                         navController.navigate("player")
-                    },
-                    onSearchSongClick = { song ->
+                    }
+                )
+            }
+            composable("search") {
+                com.auramusic.app.presentation.search.SearchScreen(
+                    onSongClick = { song ->
                         playerViewModel.playSingleSong(song)
                         navController.navigate("player")
                     }
@@ -162,8 +210,27 @@ fun XploitAppNavigation(openPlayer: Boolean = false) {
                     onSongClick = { song, playlist ->
                         playerViewModel.playSong(song, playlist)
                         navController.navigate("player")
+                    },
+                    onNavigateToSpotifyImport = {
+                        navController.navigate("spotifyImport")
                     }
                 )
+            }
+            composable("search") {
+                com.auramusic.app.presentation.search.SearchScreen(
+                    onSongClick = { song ->
+                        playerViewModel.playSingleSong(song)
+                        navController.navigate("player")
+                    }
+                )
+            }
+            composable("spotifyImport") {
+                com.auramusic.app.presentation.library.SpotifyImportScreen(
+                    onNavigateBack = { navController.popBackStack() }
+                )
+            }
+            composable("downloads") {
+                com.auramusic.app.presentation.downloads.DownloadsScreen()
             }
             composable("local") {
                 com.auramusic.app.presentation.local.LocalMusicScreen(
@@ -173,7 +240,12 @@ fun XploitAppNavigation(openPlayer: Boolean = false) {
                     }
                 )
             }
-            composable("player") {
+            composable(
+                route = "player",
+                deepLinks = listOf(
+                    androidx.navigation.navDeepLink { uriPattern = "app://xploitmusic/player" }
+                )
+            ) {
                 com.auramusic.app.presentation.player.PlayerScreen(
                     onBackClick = { navController.popBackStack() },
                     viewModel = playerViewModel

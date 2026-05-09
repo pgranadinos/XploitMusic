@@ -105,7 +105,7 @@ class AuraMediaService : MediaLibraryService() {
 
     override fun onDestroy() {
         mediaSession?.run {
-            player.release()
+            // player.release() // Fix SRE Performance: El player es Singleton (Hilt), no debe matarse.
             release()
             mediaSession = null
         }

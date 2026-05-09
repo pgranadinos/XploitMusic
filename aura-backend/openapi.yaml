@@ -1,0 +1,204 @@
+openapi: 3.0.3
+info:
+  title: AuraMusic BFF API
+  description: Backend for Frontend para la app de streaming AuraMusic.
+  version: 1.0.0
+servers:
+  - url: https://api.auramusic.com/api/v1
+    description: Servidor de Producción
+  - url: http://localhost:8080/api/v1
+    description: Entorno de Desarrollo Local
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    Track:
+      type: object
+      required:
+        - id
+        - title
+        - artist
+      properties:
+        id:
+          type: string
+          example: "dQw4w9WgXcQ"
+        title:
+          type: string
+          example: "Never Gonna Give You Up"
+        artist:
+          type: string
+          example: "Rick Astley"
+        durationSeconds:
+          type: integer
+          example: 212
+        thumbnailUrl:
+          type: string
+          example: "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg"
+
+    Carousel:
+      type: object
+      required:
+        - title
+        - type
+        - items
+      properties:
+        title:
+          type: string
+          example: "Éxitos de Rock"
+        type:
+          type: string
+          enum: [genre, trending, recommendations, recently_played, discovery]
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Track'
+            
+    SearchItem:
+      type: object
+      required:
+        - id
+        - title
+        - type
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        type:
+          type: string
+          enum: [track, artist, playlist]
+        thumbnailUrl:
+          type: string
+        # Relevante para tracks:
+        artist:
+          type: string
+        durationSeconds:
+          type: integer
+        # Relevante para playlists:
+        itemCount:
+          type: integer
+
+# Definición de los endpoints (Paths)
+paths:
+  /home/feed:
+    get:
+      summary: Obtiene la vista principal (Home) con carruseles pre-calculados (Tendencias, Descubrimiento, Géneros)
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Feed cargado correctamente
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  carousels:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Carousel'
+
+  /search:
+    get:
+      summary: Búsqueda unificada de canciones, artistas y playlists
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: q
+          schema:
+            type: string
+          required: true
+          description: Término de búsqueda
+        - in: query
+          name: type
+          schema:
+            type: string
+            enum: [all, tracks, artists, playlists]
+            default: all
+          required: false
+      responses:
+        '200':
+          description: Resultados de búsqueda mixta
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  query:
+                    type: string
+                  results:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SearchItem'
+
+  /stream/{trackId}:
+    get:
+      summary: Obtiene la URL de audio directo temporal para reproducir, extraída en el servidor
+      parameters:
+        - name: trackId
+          in: path
+          required: true
+          schema:
+            type: string
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: URL generada con éxito
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - streamUrl
+                  - format
+                  - expireAt
+                properties:
+                  streamUrl:
+                    type: string
+                    description: "URL firmada (m4a/opus) que expira en breve"
+                  format:
+                    type: string
+                    example: "m4a"
+                  expireAt:
+                    type: integer
+                    description: "Unix timestamp de expiración"
+        '404':
+          description: No se encontró audio para la canción o el extractor falló
+          
+  /telemetry/events:
+    post:
+      summary: Endpoint para ingesta batch de eventos analíticos (Ej. track_played)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                events:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - eventType
+                      - timestamp
+                    properties:
+                      eventType:
+                        type: string
+                        example: "track_played"
+                      timestamp:
+                        type: integer
+                      payload:
+                        type: object
+      responses:
+        '202':
+          description: Eventos aceptados en la cola
