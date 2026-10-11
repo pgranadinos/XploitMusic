@@ -18,7 +18,7 @@ room = "2.6.1"
 coil = "2.5.0"
 media3 = "1.2.1"
 palette = "1.0.0"
-newpipeExtractor = "v0.25.2"
+newpipeExtractor = "v0.26.5"
 workManager = "2.9.0"
 hiltWork = "1.1.0"
 

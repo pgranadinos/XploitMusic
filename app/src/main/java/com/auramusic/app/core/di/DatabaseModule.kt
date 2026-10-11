@@ -27,7 +27,12 @@ object DatabaseModule {
             context,
             AuraDatabase::class.java,
             "aura_music.db"
-        ).addMigrations(AuraDatabase.MIGRATION_6_7)
+        ).addMigrations(
+            AuraDatabase.MIGRATION_6_7,
+            AuraDatabase.MIGRATION_7_8,
+            AuraDatabase.MIGRATION_8_9,
+            AuraDatabase.MIGRATION_9_10
+        )
         .fallbackToDestructiveMigration()
         .build()
     }

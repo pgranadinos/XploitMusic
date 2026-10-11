@@ -99,7 +99,8 @@ class SpotifyMatchingEngine {
         .lowercase()
         .replace(Regex("""\((?:official\s*(?:video|audio|music\s*video|lyric(?:s)?|hd|hq)?|lyrics?|feat\.?.*?|ft\.?.*?|en\s*vivo|live|acoustic|remix|remaster(?:ed)?|traduc(?:ción|tion)?)\)"""), "")
         .replace(Regex("""\[(?:official\s*(?:video|audio|hd|hq)?|lyrics?|live|remix|remaster(?:ed)?)\]"""), "")
-        .replace(Regex("""feat\.?\s+\S+"""), "")  // feat. artista sin paréntesis
+        .replace(Regex("""\b(?:feat|ft)\.?\s+.*$"""), "")
+        .replace(Regex("""\s+(?:official\s*(?:music\s*)?(?:video|audio)|lyrics?(?:\s+video)?)\s*$"""), "")
         .replace(Regex("""[^\w\s]"""), " ")       // quitar puntuación
         .replace(Regex("""\s+"""), " ")
         .trim()
@@ -137,15 +138,15 @@ class SpotifyMatchingEngine {
     }
 
     /**
-     * Token overlap: porcentaje de tokens de [a] que aparecen en [b].
-     * P.ej. "Bad Bunny" vs "Bad Bunny LIVE" → 2/2 = 1.0
+     * Coeficiente Dice sobre tokens. Penaliza tanto artistas faltantes como
+     * nombres extraños añadidos por un canal no oficial.
      */
     fun tokenOverlapScore(a: String, b: String): Float {
         val tokensA = a.split(" ").filter { it.length > 1 }.toSet()
         val tokensB = b.split(" ").filter { it.length > 1 }.toSet()
-        if (tokensA.isEmpty()) return 0.5f // sin info suficiente → neutral
+        if (tokensA.isEmpty() || tokensB.isEmpty()) return 0.5f
         val intersection = tokensA.intersect(tokensB).size
-        return intersection.toFloat() / tokensA.size
+        return (2f * intersection) / (tokensA.size + tokensB.size)
     }
 
     /**
@@ -154,6 +155,7 @@ class SpotifyMatchingEngine {
      */
     fun durationScore(spotifySec: Float, youtubeSec: Float): Float {
         val diff = abs(spotifySec - youtubeSec)
-        return (1f - min(diff, 30f) / 30f).coerceIn(0f, 1f)
+        if (diff <= 15f) return 1f
+        return (1f - min(diff - 15f, 15f) / 15f).coerceIn(0f, 1f)
     }
 }

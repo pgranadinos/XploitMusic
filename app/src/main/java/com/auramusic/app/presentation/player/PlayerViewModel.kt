@@ -18,6 +18,7 @@ import com.auramusic.app.domain.repository.FavoritesRepository
 import com.auramusic.app.domain.repository.PlayerRepository
 import com.auramusic.app.domain.repository.QueueManager
 import com.auramusic.app.domain.repository.StreamRepository
+import com.auramusic.app.domain.recommendation.SongRecommendationSelector
 import com.auramusic.app.domain.usecase.GetAudioStreamUseCase
 import com.auramusic.app.domain.usecase.ToggleFavoriteUseCase
 import com.auramusic.app.core.analytics.AuraAnalyticsLogger
@@ -33,10 +34,12 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import com.auramusic.app.domain.model.PlaybackState
+import com.auramusic.app.domain.model.RepeatMode
 
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 @HiltViewModel
@@ -50,50 +53,37 @@ class PlayerViewModel @Inject constructor(
     private val skipHandler: SkipHandler,
     private val playlistDao: PlaylistDao,
     private val songDao: SongDao,
-    val queueManager: QueueManager,
+    private val queueManager: QueueManager,
     private val offlineManager: OfflineManager,
     private val analyticsLogger: AuraAnalyticsLogger
-) : ViewModel() {
+) : ViewModel(), SkipHandler.Delegate {
 
     // ── Step 1: Explicit Playback State Machine ──
 
     companion object {
         private const val TAG = "XploitDebug"
-        private const val STREAM_MAX_RETRIES = 2
-        private const val STREAM_INITIAL_DELAY_MS = 500L
+        private const val MAX_CONSECUTIVE_AUTO_SKIPS = 5
     }
 
     private val _currentSong = MutableStateFlow<Song?>(null)
     val currentSong = _currentSong.asStateFlow()
+    private val _sessionChecked = MutableStateFlow(false)
+    val sessionChecked = _sessionChecked.asStateFlow()
 
     private val _lyrics =
         MutableStateFlow<List<com.auramusic.app.domain.model.LyricLine>>(emptyList())
     val lyrics = _lyrics.asStateFlow()
 
-    private val _playlist = MutableStateFlow<List<Song>>(emptyList())
-    private var _currentIndex = -1
+    private val _isLyricsLoading = MutableStateFlow(false)
+    val isLyricsLoading: StateFlow<Boolean> = _isLyricsLoading.asStateFlow()
 
-    // Autoplay queue (from relatedStreams)
-    private val _autoplayQueue = MutableStateFlow<List<Song>>(emptyList())
+    val upNext: StateFlow<List<Song>> = queueManager.upNext
 
-    // Exposed UpNext queue for UI
-    val upNext: StateFlow<List<Song>> = kotlinx.coroutines.flow.combine(_playlist, _autoplayQueue) { playlist, autoplay ->
-        val upcomingPlaylist = if (playlist.isNotEmpty() && _currentIndex >= 0 && _currentIndex < playlist.size - 1) {
-            playlist.drop(_currentIndex + 1)
-        } else emptyList()
-        upcomingPlaylist + autoplay
-    }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
-
-    // Track played song IDs to avoid repeats in autoplay radio (Thread-safe to prevent crashes during skip)
-    private val _playedSongIds: MutableSet<String> = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<String, Boolean>())
-
-    // Autoplay enabled state
-    private val _autoplayEnabled = MutableStateFlow(true)
-    val autoplayEnabled = _autoplayEnabled.asStateFlow()
+    // QueueManager keeps this setting alive after the UI lifecycle ends.
+    val autoplayEnabled: StateFlow<Boolean> = queueManager.isAutoplayEnabled
 
     // Shuffle & Repeat states
-    private val _isShuffleEnabled = MutableStateFlow(false)
-    val isShuffleEnabled = _isShuffleEnabled.asStateFlow()
+    val isShuffleEnabled: StateFlow<Boolean> = queueManager.isShuffleEnabled
 
     private val _repeatMode = MutableStateFlow(Player.REPEAT_MODE_OFF)
     val repeatMode: StateFlow<Int> = _repeatMode.asStateFlow()
@@ -117,6 +107,7 @@ class PlayerViewModel @Inject constructor(
     
     // Performance: Job to debounce heavy DB/Network loads on quick skips
     private var _transitionDebounceJob: Job? = null
+    private var _lyricsJob: Job? = null
 
     // Job for skip-to-next — cancelled on each new press to prevent race conditions
     private var _skipJob: Job? = null
@@ -167,6 +158,57 @@ class PlayerViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.Lazily, 0L)
 
     init {
+        skipHandler.attach(this)
+
+        // ── BACKGROUND SYNC: Restore _currentSong from ExoPlayer when returning from background ──
+        // CRITICAL FIX (Bug 3): Changed from one-shot to continuous sync.
+        // If the ViewModel is (re)created but ExoPlayer already has a song loaded,
+        // this collector picks it up so the UI never shows "No media...".
+        // It also handles the case where MediaController reconnects after service restart.
+        viewModelScope.launch {
+            playerRepository.currentSong.collect { songFromPlayer ->
+                if (songFromPlayer != null && _currentSong.value == null) {
+                    Log.d(TAG, "PlayerVM: 🔄 Background sync — restoring '${songFromPlayer.title}' from MediaController")
+                    _currentSong.value = songFromPlayer
+                    _playbackState.value = PlaybackState.Playing(songFromPlayer, 0L)
+                    _errorMessage.value = null
+                } else if (songFromPlayer != null && _currentSong.value != null
+                    && _playbackState.value is PlaybackState.Idle
+                    && songFromPlayer.id == _currentSong.value?.id) {
+                    // Recover from Idle state if ExoPlayer still has the same song loaded
+                    Log.d(TAG, "PlayerVM: 🔄 Recovering from Idle — ExoPlayer still has '${songFromPlayer.title}'")
+                    _playbackState.value = PlaybackState.Playing(songFromPlayer, 0L)
+                    _errorMessage.value = null
+                }
+                _sessionChecked.value = true
+            }
+        }
+
+        // ── PERIODIC RECONNECTION FALLBACK ──
+        // If after 5 seconds the UI still shows no song but the service is alive,
+        // force a re-read from the player repository.
+        viewModelScope.launch {
+            delay(5000)
+            if (_currentSong.value == null) {
+                Log.d(TAG, "PlayerVM: 🔄 Periodic fallback — checking if ExoPlayer has a song...")
+                try {
+                    // Force collect one value from currentSong
+                    playerRepository.currentSong.collect { songFromPlayer ->
+                        if (songFromPlayer != null) {
+                            Log.d(TAG, "PlayerVM: 🔄 Periodic fallback — found '${songFromPlayer.title}'")
+                            _currentSong.value = songFromPlayer
+                            _playbackState.value = PlaybackState.Playing(songFromPlayer, 0L)
+                            _errorMessage.value = null
+                        }
+                        // Only take the first emission
+                        return@collect
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "PlayerVM: Periodic fallback failed: ${e.message}")
+                }
+            }
+        }
+
         // CRITICAL FIX: Single Source of Truth from ExoPlayer's mediaItemTransition.
         // This fires when ExoPlayer successfully loads a new item (manual or auto-skip).
         viewModelScope.launch {
@@ -193,44 +235,96 @@ class PlayerViewModel @Inject constructor(
             }
         }
 
-        // Fallback: Listen for track ended (entire queue exhausted).
-        // This fires when there are NO more items in ExoPlayer's queue.
-        viewModelScope.launch {
-            playerRepository.trackEnded.collect {
-                Log.d(TAG, "PlayerVM: Track ended (queue empty), autoplay=${_autoplayEnabled.value}")
-                if (_autoplayEnabled.value) {
-                    autoplayNext()
-                }
-            }
-        }
-
-        // Listen for skip requests from the media notification (via SkipHandler)
-        viewModelScope.launch {
-            skipHandler.skipRequests.collect { direction ->
-                when (direction) {
-                    SkipHandler.SkipDirection.NEXT -> {
-                        Log.d(TAG, "PlayerVM: SkipHandler → skipNext()")
-                        skipNext()
-                    }
-                    SkipHandler.SkipDirection.PREVIOUS -> {
-                        Log.d(TAG, "PlayerVM: SkipHandler → skipPrevious()")
-                        skipPrevious()
-                    }
-                }
-            }
-        }
-
         // Listen for ExoPlayer errors (network failures, decode errors, etc.)
-        // Step 4 (RC-2 fix): Routes through skipNext() which respects the state guard
         viewModelScope.launch {
             playerRepository.playerError.collect { errorMsg ->
                 if (errorMsg != null) {
                     Log.e(TAG, "PlayerVM: Player error received: $errorMsg")
-                    _errorMessage.value = errorMsg
-                    _playbackState.value = PlaybackState.Error(errorMsg)
+                    // Friendly message for bot/sign-in/403 errors
+                    val friendlyMsg = makeFriendlyError(errorMsg)
+                    _errorMessage.value = friendlyMsg
+                    _playbackState.value = PlaybackState.Error(friendlyMsg)
                     triggerAutoSkip()
                 }
             }
+        }
+    }
+
+    fun requestLyrics() {
+        val song = _currentSong.value ?: return
+        if (_lyrics.value.isEmpty() && !_isLyricsLoading.value) {
+            loadLyrics(song)
+        }
+    }
+
+    private fun loadLyrics(song: Song) {
+        if (_currentSong.value?.id == song.id && _lyrics.value.isNotEmpty()) return
+
+        _lyricsJob?.cancel()
+        _lyricsJob = viewModelScope.launch {
+            _isLyricsLoading.value = true
+            try {
+                val result = getLyricsUseCase(
+                    song.title,
+                    song.artist,
+                    song.durationSeconds.toDouble()
+                )
+                if (_currentSong.value?.id != song.id) return@launch
+
+                _lyrics.value = when (result) {
+                    is Resource.Success -> {
+                        val lyricsResult = result.data
+                        when {
+                            lyricsResult == null -> emptyList()
+                            lyricsResult.instrumental -> listOf(
+                                com.auramusic.app.domain.model.LyricLine(0L, "♪ Instrumental ♪")
+                            )
+                            else -> com.auramusic.app.core.util.LrcParser.parse(
+                                syncedLyrics = lyricsResult.syncedLyrics,
+                                plainLyrics = lyricsResult.plainLyrics,
+                                durationSeconds = lyricsResult.duration
+                            )
+                        }
+                    }
+                    is Resource.Error -> {
+                        Log.w(TAG, "PlayerVM: Lyrics unavailable for '${song.title}': ${result.message}")
+                        emptyList()
+                    }
+                    is Resource.Loading -> emptyList()
+                }
+                Log.d(TAG, "PlayerVM: Lyrics loaded for '${song.title}': ${_lyrics.value.size} lines")
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (_currentSong.value?.id == song.id) _lyrics.value = emptyList()
+                Log.w(TAG, "PlayerVM: Lyrics fetch failed: ${e.message}")
+            } finally {
+                if (_currentSong.value?.id == song.id) {
+                    _isLyricsLoading.value = false
+                }
+            }
+        }
+    }
+
+    /**
+     * Converts raw error messages into user-friendly text.
+     * Catches bot detection, sign-in requirements, and HTTP 403 errors.
+     */
+    private fun makeFriendlyError(raw: String): String {
+        val lower = raw.lowercase()
+        return when {
+            lower.contains("sign in") || lower.contains("login") ||
+                lower.contains("bot") || lower.contains("captcha") ->
+                "Servidor ocupado. Saltando a la siguiente..."
+            lower.contains("403") || lower.contains("forbidden") ->
+                "Acceso restringido. Probando otra fuente..."
+            lower.contains("404") || lower.contains("not found") ->
+                "Audio no disponible. Saltando..."
+            lower.contains("timeout") || lower.contains("timed out") ->
+                "Conexión lenta. Reintentando..."
+            lower.contains("no internet") || lower.contains("network") ->
+                "Sin conexión a internet"
+            else -> raw
         }
     }
 
@@ -239,12 +333,14 @@ class PlayerViewModel @Inject constructor(
      * Called ONLY when ExoPlayer confirms a transition via mediaItemTransition.
      *
      * CRITICAL: Even for same-song (optimistic-update match), we MUST run
-     * _playedSongIds.add() and _currentIndex update to prevent infinite same-song loops.
+     * QueueManager state must advance even for same-song optimistic transitions.
      */
     private fun onSongTransitioned(song: Song) {
         val isSameSong = _currentSong.value?.id == song.id
         
         if (!isSameSong) {
+            _lyricsJob?.cancel()
+            _isLyricsLoading.value = false
             _currentSong.value = song
             _lyrics.value = emptyList()
             _errorMessage.value = null
@@ -257,7 +353,7 @@ class PlayerViewModel @Inject constructor(
         }
 
         // ALWAYS: mark as played + update index (prevents same-song prefetch loop)
-        _playedSongIds.add(song.id)
+        queueManager.markAsPlayed(song.id)
 
         // ALWAYS: push to history stack, but ONLY at live head
         // (don't grow history while navigating backward — that causes infinite append)
@@ -266,19 +362,6 @@ class PlayerViewModel @Inject constructor(
             if (lastInHistory?.id != song.id) {
                 _historyStack.addLast(song)
                 if (_historyStack.size > 50) _historyStack.removeFirst()
-            }
-        }
-
-        // ALWAYS: update playlist index
-        val playlistIndex = _playlist.value.indexOfFirst { it.id == song.id }
-        if (playlistIndex >= 0) {
-            _currentIndex = playlistIndex
-        } else {
-            // Consume from autoplay queue
-            val queue = _autoplayQueue.value
-            val queueIndex = queue.indexOfFirst { it.id == song.id }
-            if (queueIndex >= 0) {
-                _autoplayQueue.value = queue.drop(queueIndex + 1)
             }
         }
 
@@ -292,19 +375,10 @@ class PlayerViewModel @Inject constructor(
         _transitionDebounceJob = viewModelScope.launch {
             delay(2000)
             
-            // Record play locally and in BFF (debounced)
+            // Record play locally (debounced)
             try { favoritesRepository.recordPlay(song) } catch (_: Exception) {}
-            try { streamRepository.recordTelemetryPlay(song.id) } catch (_: Exception) {}
 
-            // Fetch lyrics in background (debounced)
-            try {
-                val result = getLyricsUseCase(song.title, song.artist, song.durationSeconds.toDouble())
-                if (result is Resource.Success) {
-                    val parsed = com.auramusic.app.core.util.LrcParser.parse(result.data?.syncedLyrics)
-                    _lyrics.value = parsed
-                    Log.d(TAG, "PlayerVM/Perf: Lyrics loaded post-debounce: ${parsed.size} lines")
-                }
-            } catch (_: Exception) {}
+            loadLyrics(song)
 
             // Refresh related songs and prefetch (debounced)
             replenishAutoplayQueue(song)
@@ -320,38 +394,20 @@ class PlayerViewModel @Inject constructor(
          if (_currentSong.value?.id == mediaId) return _currentSong.value
          if (_prefetchedNextSong?.id == mediaId) return _prefetchedNextSong
 
-         return _playlist.value.firstOrNull { it.id == mediaId }
-            ?: _autoplayQueue.value.firstOrNull { it.id == mediaId }
+         return queueManager.queue.value.firstOrNull { it.id == mediaId }
     }
 
     // ── Editable Queue Actions ──
     fun moveSongInQueue(fromIndex: Int, toIndex: Int) {
-        val currentUpNext = upNext.value.toMutableList()
-        if (fromIndex in currentUpNext.indices && toIndex in currentUpNext.indices) {
-            val item = currentUpNext.removeAt(fromIndex)
-            currentUpNext.add(toIndex, item)
-            
-            // Flatten into autoplayQueue to preserve order and simplify state
-            val played = if (_playlist.value.isNotEmpty() && _currentIndex >= 0) {
-                 _playlist.value.take(_currentIndex + 1)
-            } else emptyList()
-            
-            _playlist.value = played
-            _autoplayQueue.value = currentUpNext
+        val offset = queueManager.currentIndex.value + 1
+        if (fromIndex in upNext.value.indices && toIndex in upNext.value.indices) {
+            queueManager.moveInQueue(offset + fromIndex, offset + toIndex)
         }
     }
 
     fun removeSongFromQueue(index: Int) {
-        val currentUpNext = upNext.value.toMutableList()
-        if (index in currentUpNext.indices) {
-            currentUpNext.removeAt(index)
-            
-            val played = if (_playlist.value.isNotEmpty() && _currentIndex >= 0) {
-                 _playlist.value.take(_currentIndex + 1)
-            } else emptyList()
-            
-            _playlist.value = played
-            _autoplayQueue.value = currentUpNext
+        if (index in upNext.value.indices) {
+            queueManager.removeFromQueue(queueManager.currentIndex.value + 1 + index)
         }
     }
 
@@ -364,13 +420,16 @@ class PlayerViewModel @Inject constructor(
         _ignoringTransition = false
         _historyCursor = -1
         _historyStack.clear()
-        if (playlist.isNotEmpty()) {
-            _playlist.value = playlist
-            _currentIndex = playlist.indexOfFirst { it.id == song.id }
-        } else if (_playlist.value.isEmpty()) {
-            _playlist.value = listOf(song)
-            _currentIndex = 0
+        queueManager.resetPlayedHistory()
+        val requestedQueue = if (playlist.isEmpty()) {
+            listOf(song)
+        } else if (playlist.any { it.id == song.id }) {
+            playlist
+        } else {
+            listOf(song) + playlist
         }
+        val startIndex = requestedQueue.indexOfFirst { it.id == song.id }
+        queueManager.setQueue(requestedQueue, startIndex)
         val generation = ++_playGeneration
         _playInternalJob = viewModelScope.launch {
             playInternal(song, generation)
@@ -408,10 +467,8 @@ class PlayerViewModel @Inject constructor(
         _ignoringTransition = false
         _historyCursor = -1
         _historyStack.clear()
-        _playlist.value = emptyList()
-        _currentIndex = -1
-        _playedSongIds.clear()
-        _playedSongIds.add(song.id)
+        queueManager.resetPlayedHistory()
+        queueManager.setQueue(listOf(song), startIndex = 0)
         val generation = ++_playGeneration
         _playInternalJob = viewModelScope.launch {
             playInternal(song, generation)
@@ -425,8 +482,12 @@ class PlayerViewModel @Inject constructor(
      * Instead, we launch background tasks independently in viewModelScope.
      */
     private suspend fun playInternal(song: Song, generation: Long = _playGeneration) {
-        // DO NOT mutate _currentSong here. Wait for ExoPlayer to emit transition.
-        Log.d(TAG, "PlayerVM: playInternal command for '${song.title}' gen=$generation. ExoPlayer will take control.")
+        // OPTIMISTIC UPDATE: Set _currentSong immediately so the UI shows the song
+        // while we fetch the stream URL. ExoPlayer transition will confirm later.
+        _currentSong.value = song
+        _lyrics.value = emptyList()
+        loadLyrics(song)
+        Log.d(TAG, "PlayerVM: playInternal command for '${song.title}' gen=$generation")
         val bufferStartTime = System.currentTimeMillis()
         analyticsLogger.logPlayAttempt(song.id, "PlayerViewModel")
         
@@ -435,17 +496,15 @@ class PlayerViewModel @Inject constructor(
         _prefetchedNextSong = song // Temporarily hold it so findSongByMediaId can resolve it
         _prefetchJob?.cancel()
 
-        // CRITICAL: set _ignoringTransition=true BEFORE clearQueue so the spurious
-        // ExoPlayer STATE_ENDED (fired when queue becomes empty) does NOT trigger autoplayNext.
-        // forceSkipToNext already does this correctly; playInternal was missing it.
+        // Ignore the synchronous transition emitted while setMediaItem replaces the source.
         _ignoringTransition = true
 
-        // Clear existing queues except the playlist we are iterating on
+        // prepare() uses setMediaItem(), which atomically replaces the native queue.
+        // Clearing first creates a false STATE_ENDED and must never be done here.
         try {
             playerRepository.pause()
-            playerRepository.clearQueue()
         } catch (e: Exception) {
-            Log.w(TAG, "PlayerVM: Pause/clearQueue failed: ${e.message}")
+            Log.w(TAG, "PlayerVM: Pause failed: ${e.message}")
         }
 
         val isLocal = song.id.startsWith("local_")
@@ -457,16 +516,19 @@ class PlayerViewModel @Inject constructor(
                 Log.d(TAG, "PlayerVM: 📶✅ Degradación Elegante — Jugando archivo offline ($offlinePath)")
                 playerRepository.prepare(offlinePath, song)
                 playerRepository.play()
+                _ignoringTransition = false // BUG 1 FIX: Reset flag so future transitions work
                 _playbackState.value = PlaybackState.Playing(song, 0L)
                 _errorMessage.value = null
                 val timeMs = System.currentTimeMillis() - bufferStartTime
                 com.auramusic.app.utils.AppLogger.logPlaybackState(song.id, "OFFLINE_PLAY", timeMs)
                 analyticsLogger.logPlaySuccess(song.id, timeMs)
+                resetAutoSkipCounter() // BUG 7: Reset on successful play
                 
                 // Track usage to avoid LRU Eviction
                 viewModelScope.launch { offlineManager.touchAccess(song.id) }
             } catch (e: Exception) {
                 Log.e(TAG, "PlayerVM: ❌ Offline playback error: ${e.message}", e)
+                _ignoringTransition = false // BUG 1 FIX: Reset even on error
                 _errorMessage.value = "Error al reproducir archivo offline. Usando red..."
                 _playbackState.value = PlaybackState.Error("Error al reproducir archivo offline")
             }
@@ -483,20 +545,22 @@ class PlayerViewModel @Inject constructor(
         if (isLocal && !song.streamUrl.isNullOrBlank()) {
             try {
                 Log.d(TAG, "PlayerVM: ✅ Local song — using content URI directly")
-                playerRepository.prepare(song.streamUrl!!, song)
+                playerRepository.prepare(song.streamUrl, song)
                 playerRepository.play()
+                _ignoringTransition = false // BUG 1 FIX: Reset flag so future transitions work
                 _playbackState.value = PlaybackState.Playing(song, 0L)
                 _errorMessage.value = null
                 val timeMs = System.currentTimeMillis() - bufferStartTime
                 com.auramusic.app.utils.AppLogger.logPlaybackState(song.id, "LOCAL_PLAY", timeMs)
                 analyticsLogger.logPlaySuccess(song.id, timeMs)
+                resetAutoSkipCounter() // BUG 7: Reset on successful play
             } catch (e: Exception) {
                 Log.e(TAG, "PlayerVM: ❌ Local playback error: ${e.message}", e)
                 val timeMs = System.currentTimeMillis() - bufferStartTime
                 com.auramusic.app.utils.AppLogger.logPlaybackState(song.id, "ERROR", timeMs)
                 analyticsLogger.logPlayError(song.id, e.message ?: "Error local", timeMs)
                 _errorMessage.value = "Error al reproducir archivo local"
-                _ignoringTransition = false
+                _ignoringTransition = false // BUG 1 FIX: Already here, but kept for clarity
                 _playbackState.value = PlaybackState.Error("Error al reproducir archivo local")
             }
 
@@ -521,21 +585,7 @@ class PlayerViewModel @Inject constructor(
             }
         }
 
-        // 2. Fetch lyrics
-        viewModelScope.launch {
-            try {
-                val result = getLyricsUseCase(song.title, song.artist, song.durationSeconds.toDouble())
-                if (result is Resource.Success) {
-                    val parsed = com.auramusic.app.core.util.LrcParser.parse(result.data?.syncedLyrics)
-                    _lyrics.value = parsed
-                    Log.d(TAG, "PlayerVM: Lyrics loaded: ${parsed.size} lines")
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "PlayerVM: Lyrics fetch failed: ${e.message}")
-            }
-        }
-
-        // 3. Fetch related songs for autoplay queue (shuffled, Spotify-like)
+        // 2. Fetch related songs for autoplay queue (shuffled, Spotify-like)
         // CRITICAL FIX: Do NOT call prefetchNextSong() here to prevent race conditions 
         // with the ExoPlayer instance prior to the primary stream loading.
         viewModelScope.launch {
@@ -546,7 +596,7 @@ class PlayerViewModel @Inject constructor(
         try {
             Log.d(TAG, "PlayerVM: Fetching stream URL for ${song.id}...")
             // Step 7: Retry with exponential backoff
-            when (val result = getStreamUrlWithRetry(song.id)) {
+            when (val result = getStreamUrl(song.id)) {
                 is Resource.Success -> {
                     // GUARD: If a newer song started loading while we fetched, discard this result.
                     // Needed because OkHttp blocks the IO thread and can't be truly cancelled.
@@ -564,6 +614,7 @@ class PlayerViewModel @Inject constructor(
                         Log.d(TAG, "PlayerVM: ✅ prepare() + play() — state=PLAYING")
                         _errorMessage.value = null
                         analyticsLogger.logPlaySuccess(song.id, 0L)
+                        resetAutoSkipCounter() // BUG 7: Reset on successful play
                         launchPrefetch()
                     } else {
                         Log.e(TAG, "PlayerVM: ❌ Stream URL is null or blank")
@@ -602,8 +653,9 @@ class PlayerViewModel @Inject constructor(
             }
             Log.e(TAG, "PlayerVM: ❌ Exception in stream fetch: ${e.javaClass.simpleName}: ${e.message}", e)
             _ignoringTransition = false
-            _errorMessage.value = "Error inesperado: ${e.localizedMessage}"
-            _playbackState.value = PlaybackState.Error(e.localizedMessage ?: "Error")
+            val friendlyMsg = makeFriendlyError(e.localizedMessage ?: "Error desconocido")
+            _errorMessage.value = friendlyMsg
+            _playbackState.value = PlaybackState.Error(friendlyMsg)
         } finally {
             // If still LOADING (no success/error set above), reset to IDLE
             if (_playbackState.value is PlaybackState.Buffering) {
@@ -639,75 +691,53 @@ class PlayerViewModel @Inject constructor(
                 allNewSongs.addAll(related.data)
                 Log.d(TAG, "PlayerVM: Source 1 (relatedStreams): ${related.data.size} songs")
             }
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             Log.w(TAG, "PlayerVM: relatedStreams fetch failed: ${e.message}")
         }
 
-        // Source 2: Genre-based search for variety
-        try {
+        val relatedSelection = SongRecommendationSelector.select(
+            candidates = allNewSongs,
+            seedArtist = song.artist,
+            excludedIds = queueManager.playedIds + song.id,
+            limit = 8
+        )
+        if (relatedSelection.size < 5) {
             val artist = song.artist.takeIf { it.isNotBlank() && it != "Unknown" }
             if (artist != null) {
-                val searchQueries = listOf("${artist} songs", "${artist} canciones")
-                val query = searchQueries.random()
-                val searchResult = streamRepository.searchSongs(query)
-                if (searchResult is Resource.Success && !searchResult.data.isNullOrEmpty()) {
-                    allNewSongs.addAll(searchResult.data)
-                    Log.d(TAG, "PlayerVM: Source 2 (genre search '$query'): ${searchResult.data.size} songs")
+                try {
+                    val result = streamRepository.searchSongs("$artist canciones populares")
+                    if (result is Resource.Success) allNewSongs.addAll(result.data.orEmpty())
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (e: Exception) {
+                    Log.w(TAG, "PlayerVM: Popular-song search failed: ${e.message}")
                 }
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "PlayerVM: Genre search failed: ${e.message}")
         }
-
-        // De-duplicate, filter played, filter Mix/playlist entries (no direct stream URL)
-        val MIX_PATTERN = Regex("^(Mix |Playlist |Best of |Top |Hits |Mix:)", RegexOption.IGNORE_CASE)
-        val seenIds = mutableSetOf<String>()
-        val uniqueSongs = allNewSongs.filter { s ->
-            s.id != song.id
-                && s.id !in _playedSongIds
-                && seenIds.add(s.id)
-                && !MIX_PATTERN.containsMatchIn(s.title) // Exclude YouTube Mix playlists
-                && s.title.length < 120                   // Exclude giant playlist titles
+        val preferredArtists = try {
+            (favoritesRepository.getFavorites().first() + favoritesRepository.getMostPlayed().first())
+                .map { it.artist }
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            emptyList()
         }
+        val interleavedQueue = SongRecommendationSelector.select(
+            candidates = allNewSongs,
+            seedArtist = song.artist,
+            preferredArtists = preferredArtists,
+            excludedIds = queueManager.playedIds + song.id,
+            limit = 50
+        )
 
-        // ── Anti-Artist Clustering: Round-Robin Interleaving ──
-        // Group by artist, shuffle within each group for variety
-        val groupedByArtist = uniqueSongs.groupBy { it.artist }.values
-            .map { it.shuffled() }  // Shuffle within each artist group
-            .toList()
-            .shuffled()  // Randomize artist order
-
-        val interleavedQueue = mutableListOf<Song>()
-        var round = 0
-        var added = true
-        while (added) {
-            added = false
-            for (group in groupedByArtist) {
-                if (round < group.size) {
-                    interleavedQueue.add(group[round])
-                    added = true
-                }
-            }
-            round++
-        }
-
-        // Ensure first song is NOT from the same artist as the current song
-        val currentArtist = song.artist
-        val firstDiffIdx = interleavedQueue.indexOfFirst { it.artist != currentArtist }
-        if (firstDiffIdx > 0) {
-            // Swap the first different-artist song to position 0
-            val temp = interleavedQueue[0]
-            interleavedQueue[0] = interleavedQueue[firstDiffIdx]
-            interleavedQueue[firstDiffIdx] = temp
-        }
-
-        // Merge with existing queue (keep unplayed items, append new unique ones)
-        val existingQueue = _autoplayQueue.value.filter { it.id !in _playedSongIds }
-        val existingIds = existingQueue.map { it.id }.toSet()
+        // Append only new tracks; QueueManager owns ordering and deduplication.
+        val existingIds = queueManager.queue.value.map { it.id }.toSet()
         val brandNew = interleavedQueue.filter { it.id !in existingIds }
 
-        _autoplayQueue.value = existingQueue + brandNew
-        Log.d(TAG, "PlayerVM: Autoplay queue replenished: ${_autoplayQueue.value.size} total (${brandNew.size} new, ${groupedByArtist.size} artists)")
+        queueManager.appendAutoplayTracks(brandNew)
+        Log.d(TAG, "PlayerVM: Autoplay queue replenished: ${queueManager.upNext.value.size} upcoming (${brandNew.size} new)")
 
         // Step 6 (RC-5 fix): Invalidate stale prefetch if queue changed
         if (brandNew.isNotEmpty() && _prefetchedNextSong != null) {
@@ -778,18 +808,7 @@ class PlayerViewModel @Inject constructor(
      * Returns the next song in the playlist or autoplay queue, without consuming it.
      */
     private fun getNextSong(): Song? {
-        // 1. Check playlist (only if we have an active playlist, not from playSingleSong)
-        if (_playlist.value.isNotEmpty() && _currentIndex >= 0 && _currentIndex < _playlist.value.lastIndex) {
-            return _playlist.value[_currentIndex + 1]
-        }
-        // 2. Check autoplay queue — skip already-played songs
-        val queue = _autoplayQueue.value
-        val nextUnplayed = queue.firstOrNull { it.id !in _playedSongIds }
-        if (nextUnplayed != null) {
-            return nextUnplayed
-        }
-        // 3. If all songs in queue were played, return first anyway (loop)
-        return queue.firstOrNull()
+        return queueManager.peekNext()
     }
 
     /**
@@ -805,24 +824,12 @@ class PlayerViewModel @Inject constructor(
             return
         }
 
-        // 2. No pre-fetched item — do full playInternal
-        // Check playlist first
-        if (_currentIndex < _playlist.value.lastIndex) {
-            _currentIndex++
-            Log.d(TAG, "PlayerVM: Autoplay from playlist [$_currentIndex]")
-            playInternal(_playlist.value[_currentIndex])
-            return
-        }
-
-        // Use autoplay queue (relatedStreams) — pick first unplayed song
-        val queue = _autoplayQueue.value
-        val nextFromQueue = queue.firstOrNull { it.id !in _playedSongIds } ?: queue.firstOrNull()
+        // 2. No pre-fetched item — consume the next item from QueueManager.
+        val nextFromQueue = queueManager.skipToNext()
         if (nextFromQueue != null) {
-            _autoplayQueue.value = queue.filter { it.id != nextFromQueue.id }
-            _playedSongIds.add(nextFromQueue.id)
-            Log.d(TAG, "PlayerVM: Autoplay from related: ${nextFromQueue.title}")
+            Log.d(TAG, "PlayerVM: Autoplay from queue: ${nextFromQueue.title}")
             analyticsLogger.logAutoplayStarted(_currentSong.value?.id ?: "none", nextFromQueue.id)
-            playInternal(nextFromQueue)
+            launchAutoplayPlayback(nextFromQueue)
             return
         }
 
@@ -832,32 +839,46 @@ class PlayerViewModel @Inject constructor(
         try {
             val related = streamRepository.getRelatedSongs(currentSong.id)
             if (related is Resource.Success && !related.data.isNullOrEmpty()) {
-                val fresh = related.data.filter { it.id !in _playedSongIds }.shuffled()
+                val fresh = SongRecommendationSelector.select(
+                    candidates = related.data,
+                    seedArtist = currentSong.artist,
+                    excludedIds = queueManager.playedIds + currentSong.id,
+                    limit = 20
+                )
                 if (fresh.isNotEmpty()) {
-                    val nextSong = fresh.first()
-                    _autoplayQueue.value = fresh.drop(1)
-                    _playedSongIds.add(nextSong.id)
-                    Log.d(TAG, "PlayerVM: Autoplay from fresh related: ${nextSong.title}")
-                    analyticsLogger.logAutoplayStarted(currentSong.id, nextSong.id)
-                    playInternal(nextSong)
-                    return
+                    queueManager.appendAutoplayTracks(fresh)
+                    val nextSong = queueManager.skipToNext()
+                    if (nextSong != null) {
+                        Log.d(TAG, "PlayerVM: Autoplay from fresh related: ${nextSong.title}")
+                        analyticsLogger.logAutoplayStarted(currentSong.id, nextSong.id)
+                        launchAutoplayPlayback(nextSong)
+                        return
+                    }
                 }
             }
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             Log.w(TAG, "PlayerVM: Fresh related fetch failed: ${e.message}")
         }
 
-        // 4. Ultimate fallback: search for artist mix
+        // 4. Fallback: search for individual popular songs by the same artist.
         val currentArtist = currentSong.artist
-        Log.d(TAG, "PlayerVM: Autoplay fallback: searching '$currentArtist mix'")
+        Log.d(TAG, "PlayerVM: Autoplay fallback: searching popular songs by '$currentArtist'")
         try {
-            val result = streamRepository.searchSongs("$currentArtist mix")
+            val result = streamRepository.searchSongs("$currentArtist canciones populares")
             if (result is Resource.Success && !result.data.isNullOrEmpty()) {
-                val nextSong = result.data.firstOrNull { it.id !in _playedSongIds }
-                    ?: result.data.first()
-                _playedSongIds.add(nextSong.id)
-                analyticsLogger.logAutoplayStarted(currentSong.id, nextSong.id)
-                playInternal(nextSong)
+                val nextSongs = SongRecommendationSelector.select(
+                    candidates = result.data,
+                    seedArtist = currentSong.artist,
+                    excludedIds = queueManager.playedIds + currentSong.id,
+                    limit = 10
+                )
+                queueManager.appendAutoplayTracks(nextSongs)
+                queueManager.skipToNext()?.let { queuedSong ->
+                    analyticsLogger.logAutoplayStarted(currentSong.id, queuedSong.id)
+                    launchAutoplayPlayback(queuedSong)
+                }
             } else {
                 Log.w(TAG, "PlayerVM: Autoplay fallback returned no results")
             }
@@ -866,15 +887,31 @@ class PlayerViewModel @Inject constructor(
         }
     }
 
+    private fun launchAutoplayPlayback(song: Song) {
+        _playInternalJob?.cancel()
+        val generation = ++_playGeneration
+        _playInternalJob = viewModelScope.launch {
+            playInternal(song, generation)
+        }
+    }
+
     fun toggleAutoplay() {
-        _autoplayEnabled.value = !_autoplayEnabled.value
-        Log.d(TAG, "PlayerVM: Autoplay toggled to ${_autoplayEnabled.value}")
+        queueManager.toggleAutoplay()
+        Log.d(TAG, "PlayerVM: Autoplay toggled to ${autoplayEnabled.value}")
     }
 
     fun toggleShuffle() {
-        _isShuffleEnabled.value = !_isShuffleEnabled.value
-        playerRepository.setShuffleModeEnabled(_isShuffleEnabled.value)
-        Log.d(TAG, "PlayerVM: Shuffle toggled to ${_isShuffleEnabled.value}")
+        queueManager.toggleShuffle()
+        // QueueManager owns ordering. Media3 only holds current + one prefetched item,
+        // so native shuffle would create a second, conflicting order.
+        playerRepository.setShuffleModeEnabled(false)
+        _prefetchJob?.cancel()
+        _prefetchedNextSong = null
+        viewModelScope.launch {
+            playerRepository.clearUpcomingMediaItems()
+            prefetchNextSong()
+        }
+        Log.d(TAG, "PlayerVM: Shuffle toggled to ${queueManager.isShuffleEnabled.value}")
     }
 
     fun toggleRepeat() {
@@ -884,7 +921,14 @@ class PlayerViewModel @Inject constructor(
             Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
             else -> Player.REPEAT_MODE_OFF
         }
-        playerRepository.setRepeatMode(_repeatMode.value)
+        queueManager.setRepeatMode(RepeatMode.fromExoPlayerMode(_repeatMode.value))
+        // Media3 owns repeat-one. Repeat-all is handled by the complete logical queue.
+        val nativeRepeatMode = if (_repeatMode.value == Player.REPEAT_MODE_ONE) {
+            Player.REPEAT_MODE_ONE
+        } else {
+            Player.REPEAT_MODE_OFF
+        }
+        playerRepository.setRepeatMode(nativeRepeatMode)
         Log.d(TAG, "PlayerVM: Repeat mode changed to ${_repeatMode.value}")
     }
 
@@ -898,12 +942,6 @@ class PlayerViewModel @Inject constructor(
                 Log.e(TAG, "PlayerVM: toggleFavorite failed: ${e.message}", e)
             }
         }
-    }
-
-    // ── Offline Degradation UI Triggers (C5) ──
-    fun downloadCurrentSong() {
-        val song = _currentSong.value ?: return
-        offlineManager.downloadTrack(song)
     }
 
     fun removeDownload(songId: String? = null) {
@@ -972,8 +1010,18 @@ class PlayerViewModel @Inject constructor(
             Log.d(TAG, "PlayerVM: togglePlayPause, isPlaying=${isPlaying.value}")
             if (isPlaying.value) {
                 playerRepository.pause()
+                // Update playback state to Paused so UI reflects correctly
+                val song = _currentSong.value
+                if (song != null) {
+                    _playbackState.value = PlaybackState.Paused(song, currentPosition.value)
+                }
             } else {
                 playerRepository.play()
+                // Update playback state to Playing
+                val song = _currentSong.value
+                if (song != null) {
+                    _playbackState.value = PlaybackState.Playing(song, currentPosition.value)
+                }
             }
         }
     }
@@ -1008,7 +1056,6 @@ class PlayerViewModel @Inject constructor(
                 // Advance cursor; if at live head reset to -1
                 val newCursor = if (forwardIdx == _historyStack.size - 1) -1 else forwardIdx
                 Log.d(TAG, "PlayerVM: skipNext via history forward[$forwardIdx] → '${forwardSong.title}', cursor=$newCursor")
-                _playedSongIds.remove(forwardSong.id)
                 playHistorySong(forwardSong, newCursor)
                 return
             } else {
@@ -1107,28 +1154,25 @@ class PlayerViewModel @Inject constructor(
                 _prefetchJob?.cancel()
             }
 
-            // 5. Clear ExoPlayer queue + suppress stale transitions (on Main thread)
+            // 5. Suppress the synchronous transition while prepare() atomically
+            // replaces the native queue. Never clear first: that emits STATE_ENDED.
             withContext(Dispatchers.Main) {
                 _ignoringTransition = true
-                try {
-                    playerRepository.clearQueue()
-                } catch (e: Exception) {
-                    Log.w(TAG, "PlayerVM: clearQueue failed: ${e.message}")
-                }
             }
 
             // 6. Resolve stream URL (network call — runs on IO thread)
             try {
                 val isLocal = nextSong.id.startsWith("local_")
-                if (isLocal && !nextSong.streamUrl.isNullOrBlank()) {
+                val localStreamUrl = nextSong.streamUrl
+                if (isLocal && !localStreamUrl.isNullOrBlank()) {
                     withContext(Dispatchers.Main) {
-                        playerRepository.prepare(nextSong.streamUrl!!, nextSong)
+                        playerRepository.prepare(localStreamUrl, nextSong)
                         playerRepository.play()
                         _ignoringTransition = false // Allow real transition event through
                     }
                 } else {
                     // Step 7: Retry with exponential backoff for skip path too
-                    when (val result = getStreamUrlWithRetry(nextSong.id)) {
+                    when (val result = getStreamUrl(nextSong.id)) {
                         is Resource.Success -> {
                             val streamUrl = result.data
                             if (!streamUrl.isNullOrBlank()) {
@@ -1143,6 +1187,7 @@ class PlayerViewModel @Inject constructor(
                                     playerRepository.play()
                                     _playbackState.value = PlaybackState.Playing(nextSong, 0L)
                                     _ignoringTransition = false
+                                    resetAutoSkipCounter() // BUG 7: Reset on successful play
                                 }
                                 Log.d(TAG, "PlayerVM: forceSkipToNext — playback started, state=PLAYING")
                             } else {
@@ -1192,14 +1237,7 @@ class PlayerViewModel @Inject constructor(
             viewModelScope.launch {
                 try { favoritesRepository.recordPlay(songForBackground) } catch (_: Exception) {}
             }
-            viewModelScope.launch {
-                try {
-                    val lyricsResult = getLyricsUseCase(songForBackground.title, songForBackground.artist, songForBackground.durationSeconds.toDouble())
-                    if (lyricsResult is Resource.Success) {
-                        _lyrics.value = com.auramusic.app.core.util.LrcParser.parse(lyricsResult.data?.syncedLyrics)
-                    }
-                } catch (_: Exception) {}
-            }
+            loadLyrics(songForBackground)
             viewModelScope.launch {
                 replenishAutoplayQueue(songForBackground)
                 prefetchNextSong()
@@ -1214,20 +1252,11 @@ class PlayerViewModel @Inject constructor(
      * a background coroutine fires to refill the queue before it empties.
      */
     private fun getNextSongFromQueue(): Song? {
-        // 1. Check playlist
-        if (_playlist.value.isNotEmpty() && _currentIndex >= 0 && _currentIndex < _playlist.value.lastIndex) {
-            _currentIndex++
-            return _playlist.value[_currentIndex]
-        }
-
-        // 2. Check autoplay queue — pick first unplayed
-        val queue = _autoplayQueue.value
-        val next = queue.firstOrNull { it.id !in _playedSongIds }
+        val next = queueManager.skipToNext()
         if (next != null) {
-            _autoplayQueue.value = queue.filter { it.id != next.id }
-
             // PROACTIVE REPLENISHMENT: if queue is getting low, refill in background
-            val remainingUnplayed = _autoplayQueue.value.count { it.id !in _playedSongIds }
+            val playedIds = queueManager.playedIds
+            val remainingUnplayed = queueManager.upNext.value.count { it.id !in playedIds }
             if (remainingUnplayed <= 3) {
                 val seedSong = _currentSong.value ?: next
                 Log.d(TAG, "PlayerVM: Queue low ($remainingUnplayed left) — proactively replenishing from '${seedSong.title}'")
@@ -1242,16 +1271,38 @@ class PlayerViewModel @Inject constructor(
         return null
     }
 
-    fun skipPrevious() {
-        Log.d(TAG, "PlayerVM: skipPrevious called, index=$_currentIndex, cursor=$_historyCursor, history=${_historyStack.size}")
-        val pos = currentPosition.value
+    override fun onSkipNext() {
+        Log.d(TAG, "PlayerVM: SkipHandler → skipNext()")
+        skipNext()
+    }
 
-        // If more than 5s into the song, restart it (Spotify-like behavior)
-        if (pos > 5_000L) {
-            seekTo(0)
+    override fun onAutomaticNext() {
+        if (_ignoringTransition || _playbackState.value is PlaybackState.Buffering) {
+            Log.d(TAG, "PlayerVM: Ignoring STATE_ENDED during an explicit transition")
             return
         }
 
+        Log.d(
+            TAG,
+            "PlayerVM: Natural track end — repeat=${queueManager.repeatMode.value}, autoplay=${autoplayEnabled.value}"
+        )
+        viewModelScope.launch {
+            when (queueManager.repeatMode.value) {
+                RepeatMode.ONE -> {
+                    playerRepository.seekTo(0L)
+                    playerRepository.play()
+                }
+                else -> {
+                    if (queueManager.hasNext() || autoplayEnabled.value) {
+                        autoplayNext()
+                    }
+                }
+            }
+        }
+    }
+
+    fun skipPrevious() {
+        Log.d(TAG, "PlayerVM: skipPrevious called, index=${queueManager.currentIndex.value}, cursor=$_historyCursor, history=${_historyStack.size}")
         // Cancel any in-flight skip
         _skipJob?.cancel()
         _skipJob = null
@@ -1264,8 +1315,13 @@ class PlayerViewModel @Inject constructor(
         if (targetIdx >= 0 && targetIdx < _historyStack.size) {
             val previousSong = _historyStack[targetIdx]
             Log.d(TAG, "PlayerVM: skipPrevious from history[$targetIdx] → '${previousSong.title}'")
-            _playedSongIds.remove(previousSong.id)
             playHistorySong(previousSong, targetIdx)  // preserves cursor
+            return
+        }
+
+        // After restoring a session the in-memory history may be empty.
+        queueManager.skipToPrevious()?.let { previousSong ->
+            playHistorySong(previousSong, -1)
             return
         }
 
@@ -1274,48 +1330,45 @@ class PlayerViewModel @Inject constructor(
         seekTo(0)
     }
 
-    /**
-     * Step 7: Stream URL fetch with exponential backoff retry.
-     * Retries up to STREAM_MAX_RETRIES times with delays: 500ms, 1000ms.
-     * This handles transient network failures and Piped API timeouts.
-     */
-    private suspend fun getStreamUrlWithRetry(songId: String): Resource<String> {
-        var lastError: Resource<String> = Resource.Error("Unknown error")
+    override fun onSkipPrevious() {
+        Log.d(TAG, "PlayerVM: SkipHandler → skipPrevious()")
+        skipPrevious()
+    }
 
-        repeat(STREAM_MAX_RETRIES + 1) { attempt ->
-            if (attempt > 0) {
-                val delayMs = STREAM_INITIAL_DELAY_MS * (1 shl (attempt - 1))
-                Log.d(TAG, "PlayerVM: Stream retry #$attempt after ${delayMs}ms for songId=$songId")
-                delay(delayMs)
-            }
+    override fun onCleared() {
+        skipHandler.detach(this)
+        super.onCleared()
+    }
 
-            val result = getAudioStreamUseCase(songId)
-            when (result) {
-                is Resource.Success -> {
-                    if (attempt > 0) {
-                        Log.d(TAG, "PlayerVM: Stream retry #$attempt succeeded for songId=$songId")
-                    }
-                    return result
-                }
-                is Resource.Error -> {
-                    lastError = result
-                    Log.w(TAG, "PlayerVM: Stream attempt #${attempt + 1} failed: ${result.message}")
-                }
-                else -> {}
+    /** ProviderGateway already tries the configured stream providers in order. */
+    private suspend fun getStreamUrl(songId: String): Resource<String> {
+        return getAudioStreamUseCase(songId).also { result ->
+            if (result is Resource.Error) {
+                Log.w(TAG, "PlayerVM: Stream provider fallback exhausted for $songId: ${result.message}")
             }
         }
-
-        return lastError
     }
 
     // ── Auto-Skip utility for failures ──
     private var _autoSkipJob: Job? = null
+    @Volatile private var _consecutiveAutoSkips = 0
 
     private fun triggerAutoSkip() {
         _autoSkipJob?.cancel()
+
+        // BUG 7 FIX: Limit consecutive auto-skips to prevent infinite loop
+        _consecutiveAutoSkips++
+        if (_consecutiveAutoSkips > MAX_CONSECUTIVE_AUTO_SKIPS) {
+            Log.w(TAG, "PlayerVM: ⛔ Auto-skip limit reached ($_consecutiveAutoSkips). Stopping playback.")
+            _errorMessage.value = "No se pueden reproducir las canciones. Verifica tu conexión e intenta más tarde."
+            _playbackState.value = PlaybackState.Error("Múltiples canciones fallaron")
+            _consecutiveAutoSkips = 0
+            return
+        }
+
         _autoSkipJob = viewModelScope.launch {
-            Log.d(TAG, "PlayerVM: ⚠️ Error detectado, saltando automáticamente a la próxima pista en 800ms...")
-            delay(800) // Reduced from 2500ms to match Spotify-like responsiveness
+            Log.d(TAG, "PlayerVM: ⚠️ Error detectado, auto-skip #$_consecutiveAutoSkips/$MAX_CONSECUTIVE_AUTO_SKIPS en 800ms...")
+            delay(800)
             if (_playbackState.value is PlaybackState.Error || _playbackState.value is PlaybackState.Idle) {
                 _playbackState.value = PlaybackState.Idle // Reset to allow skipNext to run
                 skipNext()
@@ -1323,10 +1376,22 @@ class PlayerViewModel @Inject constructor(
         }
     }
 
+    /** Reset the consecutive auto-skip counter on successful playback */
+    private fun resetAutoSkipCounter() {
+        if (_consecutiveAutoSkips > 0) {
+            Log.d(TAG, "PlayerVM: ✅ Resetting auto-skip counter (was $_consecutiveAutoSkips)")
+            _consecutiveAutoSkips = 0
+        }
+    }
+
     // ── User Actions ──
 
     fun toggleDownload() {
         val song = _currentSong.value ?: return
+        if (song.id.startsWith("local_")) {
+            Log.d(TAG, "PlayerVM: '${song.title}' is already local; download ignored")
+            return
+        }
         val currentDownload = downloadState.value
 
         if (currentDownload != null && currentDownload.status == "COMPLETED") {

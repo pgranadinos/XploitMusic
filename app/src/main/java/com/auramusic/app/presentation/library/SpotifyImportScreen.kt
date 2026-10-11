@@ -1,23 +1,26 @@
 package com.auramusic.app.presentation.library
 
-import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -33,6 +36,7 @@ import com.auramusic.app.data.remote.SpotifyPlaylistDto
 import com.auramusic.app.data.repository.SpotifyMatchingEngine.MatchType
 import com.auramusic.app.domain.usecase.ImportProgress
 import com.auramusic.app.domain.usecase.TrackImportStatus
+import com.auramusic.app.data.local.SpotifyConfigurationStore
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -42,17 +46,12 @@ fun SpotifyImportScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val userProfile by viewModel.userProfile.collectAsState()
+    val spotifyClientId by viewModel.spotifyClientId.collectAsState()
     val context = LocalContext.current
 
-    val oauthCode by SpotifyAuthManager.codeResult.collectAsState()
-    LaunchedEffect(oauthCode) {
-        oauthCode?.let { code ->
-            val verifier = SpotifyAuthManager.verifierToConsume
-            if (verifier != null) {
-                viewModel.exchangeToken(code, verifier)
-                SpotifyAuthManager.verifierToConsume = null
-            }
-            SpotifyAuthManager.codeResult.value = null
+    LaunchedEffect(Unit) {
+        viewModel.authUrlEvents.collect { url ->
+            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
         }
     }
 
@@ -62,7 +61,7 @@ fun SpotifyImportScreen(
                 title = { Text("Importar desde Spotify", fontWeight = FontWeight.Bold) },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Volver")
                     }
                 },
                 actions = {
@@ -74,7 +73,7 @@ fun SpotifyImportScreen(
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.background,
-                    titleContentColor = Color(0xFF1DB954) // Spotify Green
+                    titleContentColor = MaterialTheme.colorScheme.primary
                 )
             )
         }
@@ -90,7 +89,16 @@ fun SpotifyImportScreen(
                 }
                 is SpotifyImportState.Unauthenticated -> {
                     UnauthenticatedView(
-                        onLoginClick = { launchSpotifyAuth(context, viewModel) }
+                        initialClientId = spotifyClientId,
+                        onLoginClick = viewModel::startOAuth,
+                        onOpenDashboard = {
+                            context.startActivity(
+                                Intent(
+                                    Intent.ACTION_VIEW,
+                                    Uri.parse("https://developer.spotify.com/dashboard")
+                                )
+                            )
+                        }
                     )
                 }
                 is SpotifyImportState.LoadingPlaylists -> {
@@ -112,7 +120,7 @@ fun SpotifyImportScreen(
                         Spacer(modifier = Modifier.height(16.dp))
                         Text(state.message, color = MaterialTheme.colorScheme.error)
                         Spacer(modifier = Modifier.height(16.dp))
-                        Button(onClick = { viewModel.loadPlaylists() }) {
+                        Button(onClick = { viewModel.retry() }) {
                             Text("Reintentar")
                         }
                     }
@@ -120,13 +128,22 @@ fun SpotifyImportScreen(
                 is SpotifyImportState.PlaylistsLoaded -> {
                     PlaylistPickerView(
                         playlists = state.playlists,
-                        onPlaylistClick = { viewModel.startImport(it) }
+                        onPlaylistClick = { viewModel.startImport(it) },
+                        onOpenSpotify = { playlist ->
+                            context.startActivity(
+                                Intent(
+                                    Intent.ACTION_VIEW,
+                                    Uri.parse("https://open.spotify.com/playlist/${playlist.id}")
+                                )
+                            )
+                        }
                     )
                 }
                 is SpotifyImportState.Importing -> {
                     ImportProgressView(
                         progress = state.progress,
-                        onDone = onNavigateBack
+                        onDone = onNavigateBack,
+                        onCancel = { viewModel.cancelImport() }
                     )
                 }
             }
@@ -134,14 +151,18 @@ fun SpotifyImportScreen(
     }
 }
 
-// ─── Constants ───
-private val SpotifyGreen = Color(0xFF1DB954)
-
 @Composable
-private fun UnauthenticatedView(onLoginClick: () -> Unit) {
+private fun UnauthenticatedView(
+    initialClientId: String,
+    onLoginClick: (String) -> Unit,
+    onOpenDashboard: () -> Unit
+) {
+    var clientId by rememberSaveable(initialClientId) { mutableStateOf(initialClientId) }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(32.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
@@ -150,13 +171,13 @@ private fun UnauthenticatedView(onLoginClick: () -> Unit) {
         Box(
             modifier = Modifier
                 .size(100.dp)
-                .background(SpotifyGreen.copy(alpha = 0.2f), CircleShape),
+                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.2f), CircleShape),
             contentAlignment = Alignment.Center
         ) {
             Icon(
                 Icons.Default.LibraryMusic,
                 contentDescription = null,
-                tint = SpotifyGreen,
+                tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.size(48.dp)
             )
         }
@@ -170,15 +191,34 @@ private fun UnauthenticatedView(onLoginClick: () -> Unit) {
         )
         Spacer(modifier = Modifier.height(12.dp))
         Text(
-            "Importa tus playlists a AuraMusic. AuraMusic buscará las equivalencias en YouTube y las guardará localmente.\n\nNo se violan términos de Spotify (no hay streaming de audio).",
+            "Importa tus playlists a XploitMusic. Se usarán sus metadatos para buscar equivalencias y guardarlas localmente. Spotify no proporciona el audio de reproducción.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center
         )
+        Spacer(modifier = Modifier.height(20.dp))
+        OutlinedTextField(
+            value = clientId,
+            onValueChange = { clientId = it.trim() },
+            label = { Text("Spotify Client ID") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            "URI para registrar: ${SpotifyConfigurationStore.REGISTERED_REDIRECT_URI}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center
+        )
+        TextButton(onClick = onOpenDashboard) {
+            Text("Abrir Spotify Developer Dashboard")
+        }
         Spacer(modifier = Modifier.height(32.dp))
         Button(
-            onClick = onLoginClick,
-            colors = ButtonDefaults.buttonColors(containerColor = SpotifyGreen),
+            onClick = { onLoginClick(clientId) },
+            enabled = clientId.isNotBlank(),
+            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
             shape = RoundedCornerShape(24.dp),
             modifier = Modifier.fillMaxWidth(0.8f).height(56.dp)
         ) {
@@ -190,7 +230,8 @@ private fun UnauthenticatedView(onLoginClick: () -> Unit) {
 @Composable
 private fun PlaylistPickerView(
     playlists: List<SpotifyPlaylistDto>,
-    onPlaylistClick: (SpotifyPlaylistDto) -> Unit
+    onPlaylistClick: (SpotifyPlaylistDto) -> Unit,
+    onOpenSpotify: (SpotifyPlaylistDto) -> Unit
 ) {
     LazyColumn(
         contentPadding = PaddingValues(bottom = 80.dp)
@@ -231,9 +272,16 @@ private fun PlaylistPickerView(
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        "${playlist.tracks.total} canciones",
+                        "${playlist.totalItems} canciones",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                IconButton(onClick = { onOpenSpotify(playlist) }) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.OpenInNew,
+                        contentDescription = "Abrir en Spotify",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
@@ -242,7 +290,11 @@ private fun PlaylistPickerView(
 }
 
 @Composable
-private fun ImportProgressView(progress: ImportProgress, onDone: () -> Unit) {
+private fun ImportProgressView(
+    progress: ImportProgress,
+    onDone: () -> Unit,
+    onCancel: () -> Unit
+) {
     val completedRatio = if (progress.totalTracks > 0) progress.processedTracks.toFloat() / progress.totalTracks else 0f
 
     Column(
@@ -266,7 +318,7 @@ private fun ImportProgressView(progress: ImportProgress, onDone: () -> Unit) {
                 progress = { completedRatio },
                 modifier = Modifier.fillMaxSize(),
                 strokeWidth = 12.dp,
-                color = SpotifyGreen,
+                color = MaterialTheme.colorScheme.primary,
                 trackColor = MaterialTheme.colorScheme.surfaceVariant
             )
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -291,12 +343,17 @@ private fun ImportProgressView(progress: ImportProgress, onDone: () -> Unit) {
             val (icon, tint, message) = when (status) {
                 is TrackImportStatus.Matched -> {
                     when (status.matchType) {
-                        MatchType.EXACT -> Triple(Icons.Default.CheckCircle, SpotifyGreen, "Match Exácto: ${status.song.title}")
-                        MatchType.HIGH_CONFIDENCE -> Triple(Icons.Default.CheckCircle, Color(0xFF8BC34A), "Match Encontrado: ${status.song.title}")
+                        MatchType.EXACT -> Triple(Icons.Default.CheckCircle, MaterialTheme.colorScheme.primary, "Coincidencia exacta: ${status.song.title}")
+                        MatchType.HIGH_CONFIDENCE -> Triple(Icons.Default.CheckCircle, MaterialTheme.colorScheme.primary, "Coincidencia encontrada: ${status.song.title}")
                         MatchType.LOW_CONFIDENCE -> Triple(Icons.Default.Warning, Color(0xFFFFC107), "Baja Confianza: ${status.song.title}")
                         MatchType.NO_MATCH -> Triple(Icons.Default.Error, MaterialTheme.colorScheme.error, "No match para: ${status.spotifyTrack.name}")
                     }
                 }
+                is TrackImportStatus.LowConfidence -> Triple(
+                    Icons.Default.Warning,
+                    Color(0xFFFFC107),
+                    "Omitida por baja confianza: ${status.spotifyTrack.name}"
+                )
                 is TrackImportStatus.NoMatch -> Triple(Icons.Default.Error, MaterialTheme.colorScheme.error, "No encontrado: ${status.spotifyTrack.name}")
                 is TrackImportStatus.Failed -> Triple(Icons.Default.Error, MaterialTheme.colorScheme.error, "Error: ${status.spotifyTrack.name}")
             }
@@ -316,29 +373,23 @@ private fun ImportProgressView(progress: ImportProgress, onDone: () -> Unit) {
         Spacer(modifier = Modifier.weight(1f))
 
         if (progress.isComplete) {
+            Text(
+                "${progress.matchedTracks} importadas · ${progress.skippedTracks} omitidas · ${progress.failedTracks} con error",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center
+            )
+            Spacer(modifier = Modifier.height(12.dp))
             Button(
                 onClick = onDone,
                 modifier = Modifier.fillMaxWidth().height(56.dp)
             ) {
                 Text("Ir a Librería")
             }
+        } else {
+            TextButton(onClick = onCancel) {
+                Text("Cancelar importación")
+            }
         }
     }
-}
-
-// ─── External Actions ───
-
-// Guardamos el verifier globalmente de forma temporal para el callback.
-// En una app más robusta se persiste en DataStore.
-object SpotifyAuthManager {
-    var verifierToConsume: String? = null
-    val codeResult = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
-}
-
-private fun launchSpotifyAuth(context: Context, viewModel: ImportPlaylistViewModel) {
-    val (url, verifier) = viewModel.getOAuthUrl()
-    SpotifyAuthManager.verifierToConsume = verifier
-
-    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
-    context.startActivity(intent)
 }

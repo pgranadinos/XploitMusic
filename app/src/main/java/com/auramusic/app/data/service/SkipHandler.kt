@@ -1,32 +1,51 @@
 package com.auramusic.app.data.service
 
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.flow.asSharedFlow
+import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Shared event bus for media notification skip actions.
- * The ForwardingPlayer in AuraMediaService emits skip events,
- * and the PlayerViewModel collects them to trigger forceSkipToNext/Previous.
- *
- * This bridges the gap between ExoPlayer (which only knows about queued MediaItems)
- * and our custom autoplay queue (managed by PlayerViewModel).
+ * Routes manual notification navigation to the active UI when available.
+ * Natural track completion always uses the lifecycle-independent player path.
  */
 @Singleton
-class SkipHandler @Inject constructor() {
+class SkipHandler @Inject constructor(
+    private val backgroundNavigator: BackgroundPlaybackNavigator
+) {
 
-    enum class SkipDirection { NEXT, PREVIOUS }
+    interface Delegate {
+        fun onSkipNext()
+        fun onSkipPrevious()
+        fun onAutomaticNext()
+    }
 
-    private val _skipRequests = MutableSharedFlow<SkipDirection>(extraBufferCapacity = 1)
-    val skipRequests: SharedFlow<SkipDirection> = _skipRequests.asSharedFlow()
+    private val delegate = AtomicReference<Delegate?>(null)
+
+    fun hasActiveDelegate(): Boolean = delegate.get() != null
+
+    fun attach(delegate: Delegate) {
+        backgroundNavigator.cancelPendingNavigation()
+        this.delegate.set(delegate)
+    }
+
+    fun cancelPendingNavigation() = backgroundNavigator.cancelPendingNavigation()
+
+    fun detach(delegate: Delegate) {
+        this.delegate.compareAndSet(delegate, null)
+    }
 
     fun requestSkipNext() {
-        _skipRequests.tryEmit(SkipDirection.NEXT)
+        delegate.get()?.onSkipNext() ?: backgroundNavigator.requestSkipNext()
     }
 
     fun requestSkipPrevious() {
-        _skipRequests.tryEmit(SkipDirection.PREVIOUS)
+        delegate.get()?.onSkipPrevious() ?: backgroundNavigator.requestSkipPrevious()
+    }
+
+    fun requestAutomaticNext() {
+        // Track completion can happen with the UI in the background while its
+        // ViewModel is still attached. Keep automatic playback owned by the
+        // service path so it cannot depend on the screen's lifecycle.
+        backgroundNavigator.requestAutomaticNext()
     }
 }

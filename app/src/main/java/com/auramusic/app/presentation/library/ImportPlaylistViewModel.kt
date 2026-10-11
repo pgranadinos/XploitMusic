@@ -3,16 +3,22 @@ package com.auramusic.app.presentation.library
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.auramusic.app.data.local.entity.SpotifyTokenEntity
+import com.auramusic.app.data.local.SpotifyConfigurationStore
 import com.auramusic.app.data.remote.SpotifyPlaylistDto
 import com.auramusic.app.domain.repository.SpotifyRepository
 import com.auramusic.app.domain.usecase.ImportPlaylistUseCase
 import com.auramusic.app.domain.usecase.ImportProgress
+import com.auramusic.app.domain.model.SpotifyOAuthCallback
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -28,17 +34,29 @@ sealed class SpotifyImportState {
 @HiltViewModel
 class ImportPlaylistViewModel @Inject constructor(
     private val spotifyRepository: SpotifyRepository,
-    private val importUseCase: ImportPlaylistUseCase
+    private val importUseCase: ImportPlaylistUseCase,
+    private val configurationStore: SpotifyConfigurationStore
 ) : ViewModel() {
+
+    private enum class RetryAction { AUTH, PLAYLISTS }
 
     private val _uiState = MutableStateFlow<SpotifyImportState>(SpotifyImportState.CheckingAuth)
     val uiState: StateFlow<SpotifyImportState> = _uiState
 
     val userProfile: StateFlow<SpotifyTokenEntity?> = spotifyRepository.observeUserProfile()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+    val spotifyClientId: StateFlow<String> = configurationStore.clientId
+
+    private val _authUrlEvents = MutableSharedFlow<String>(extraBufferCapacity = 1)
+    val authUrlEvents: SharedFlow<String> = _authUrlEvents.asSharedFlow()
+
+    private var retryAction = RetryAction.PLAYLISTS
+    private var playlistLoadJob: Job? = null
+    private var importJob: Job? = null
 
     init {
         checkAuthStatus()
+        observeOAuthCallbacks()
     }
 
     private fun checkAuthStatus() {
@@ -53,28 +71,66 @@ class ImportPlaylistViewModel @Inject constructor(
         }
     }
 
-    fun getOAuthUrl(): Pair<String, String> {
-        return spotifyRepository.buildAuthUrl()
-    }
-
-    fun exchangeToken(code: String, verifier: String) {
+    private fun observeOAuthCallbacks() {
         viewModelScope.launch {
-            val result = spotifyRepository.exchangeCode(code, verifier)
-            if (result.isSuccess) {
-                spotifyRepository.fetchAndStoreProfile()
-                loadPlaylists()
-            } else {
-                _uiState.value = SpotifyImportState.Error("Error de autenticación")
+            spotifyRepository.observeOAuthCallbacks().collect { callback ->
+                handleOAuthCallback(callback)
             }
         }
     }
 
-    fun loadPlaylists() {
-        _uiState.value = SpotifyImportState.LoadingPlaylists
+    fun startOAuth(clientId: String) {
+        configurationStore.saveClientId(clientId).onFailure { error ->
+            showAuthError(error.message ?: "Client ID inválido")
+            return
+        }
+        _uiState.value = SpotifyImportState.CheckingAuth
         viewModelScope.launch {
-            // Refrescar token antes de consultar api
-            spotifyRepository.refreshTokenIfNeeded()
+            spotifyRepository.buildAuthUrl()
+                .onSuccess { _authUrlEvents.emit(it) }
+                .onFailure { error ->
+                    showAuthError(error.message ?: "No se pudo iniciar Spotify")
+                }
+        }
+    }
 
+    private fun handleOAuthCallback(callback: SpotifyOAuthCallback) {
+        val error = callback.error
+        if (error != null) {
+            showAuthError("Spotify rechazó la autorización: $error")
+            return
+        }
+
+        val code = callback.code
+        val state = callback.state
+        if (code.isNullOrBlank() || state.isNullOrBlank()) {
+            showAuthError("La respuesta de Spotify está incompleta")
+            return
+        }
+
+        viewModelScope.launch {
+            _uiState.value = SpotifyImportState.CheckingAuth
+            val result = spotifyRepository.exchangeCode(code, state)
+            if (result.isSuccess) {
+                spotifyRepository.fetchAndStoreProfile()
+            } else {
+                showAuthError(
+                    "Error de autenticación: ${result.exceptionOrNull()?.message ?: "respuesta inválida"}"
+                )
+            }
+        }
+    }
+
+    private fun showAuthError(message: String) {
+        retryAction = RetryAction.AUTH
+        _uiState.value = SpotifyImportState.Error(message)
+    }
+
+    fun loadPlaylists() {
+        if (playlistLoadJob?.isActive == true) return
+        retryAction = RetryAction.PLAYLISTS
+        _uiState.value = SpotifyImportState.LoadingPlaylists
+        playlistLoadJob = viewModelScope.launch {
             val result = spotifyRepository.getAllPlaylists()
             if (result.isSuccess) {
                 _uiState.value = SpotifyImportState.PlaylistsLoaded(result.getOrDefault(emptyList()))
@@ -85,10 +141,30 @@ class ImportPlaylistViewModel @Inject constructor(
     }
 
     fun startImport(playlist: SpotifyPlaylistDto) {
-        viewModelScope.launch {
+        if (importJob?.isActive == true) return
+        importJob = viewModelScope.launch {
             importUseCase.execute(playlist).collectLatest { progress ->
-                _uiState.value = SpotifyImportState.Importing(progress)
+                val error = progress.errorMessage
+                if (error != null) {
+                    retryAction = RetryAction.PLAYLISTS
+                    _uiState.value = SpotifyImportState.Error(error)
+                } else {
+                    _uiState.value = SpotifyImportState.Importing(progress)
+                }
             }
+        }
+    }
+
+    fun cancelImport() {
+        importJob?.cancel()
+        importJob = null
+        loadPlaylists()
+    }
+
+    fun retry() {
+        when (retryAction) {
+            RetryAction.AUTH -> _uiState.value = SpotifyImportState.Unauthenticated
+            RetryAction.PLAYLISTS -> loadPlaylists()
         }
     }
 

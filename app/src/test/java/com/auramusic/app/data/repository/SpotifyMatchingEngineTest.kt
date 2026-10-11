@@ -49,10 +49,17 @@ class SpotifyMatchingEngineTest {
     @Test
     fun `tokenOverlapScore should return high score for partial artist match`() {
         val score1 = engine.tokenOverlapScore("the weeknd", "the weeknd official")
-        assertEquals(1.0f, score1) // 2/2 tokens de The Weeknd están en el canal de YT
+        assertEquals(0.8f, score1) // Coinciden 2 tokens, pero se penaliza el token extra.
 
         val score2 = engine.tokenOverlapScore("bad bunny", "bad bunny jhay cortez")
-        assertEquals(1.0f, score2) // 2/2 tokens de Bad Bunny presentes
+        assertEquals(2f / 3f, score2)
+    }
+
+    @Test
+    fun `durationScore keeps fifteen seconds tolerance and reaches zero at thirty`() {
+        assertEquals(1.0f, engine.durationScore(200f, 215f))
+        assertEquals(0.5f, engine.durationScore(200f, 222.5f))
+        assertEquals(0.0f, engine.durationScore(200f, 230f))
     }
 
     // ─── Integration ──────────────────────────────────────────────────────────

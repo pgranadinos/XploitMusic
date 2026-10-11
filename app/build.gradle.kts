@@ -17,6 +17,14 @@ if (localPropertiesFile.exists()) {
     localProperties.load(FileInputStream(localPropertiesFile))
 }
 val useLocalhostBff = localProperties.getProperty("USE_LOCALHOST_BFF", "false").toBoolean()
+val localBffBaseUrl = localProperties.getProperty(
+    "BFF_BASE_URL",
+    "http://10.0.2.2:8080/api/v1/"
+)
+val spotifyClientId = localProperties.getProperty("SPOTIFY_CLIENT_ID", "").trim()
+
+fun String.asBuildConfigString(): String =
+    "\"${replace("\\", "\\\\").replace("\"", "\\\"")}\""
 
 android {
     namespace = "com.auramusic.app"
@@ -35,14 +43,16 @@ android {
         }
         buildConfigField("boolean", "ALLOW_LOCALHOST", "false")
         buildConfigField("String", "BFF_BASE_URL", "\"https://api.piped.private.coffee/\"")
-        buildConfigField("String", "SPOTIFY_CLIENT_ID", "\"${localProperties.getProperty("SPOTIFY_CLIENT_ID", "a1b2c3d4e5f6g7h8")}\"")
+        buildConfigField("String", "PIPED_BASE_URL", "\"https://api.piped.private.coffee/\"")
+        buildConfigField("String", "LRCLIB_BASE_URL", "\"https://lrclib.net/\"")
+        buildConfigField("String", "SPOTIFY_CLIENT_ID", spotifyClientId.asBuildConfigString())
     }
 
     buildTypes {
 
         getByName("debug") {
             buildConfigField("boolean", "ALLOW_LOCALHOST", useLocalhostBff.toString())
-            val baseUrl = if (useLocalhostBff) "\"http://localhost:8080/api/v1/\"" else "\"https://api.piped.private.coffee/\""
+            val baseUrl = if (useLocalhostBff) "\"$localBffBaseUrl\"" else "\"https://api.piped.private.coffee/\""
             buildConfigField("String", "BFF_BASE_URL", baseUrl)
         }
         release {
@@ -57,6 +67,7 @@ android {
         }
     }
     compileOptions {
+        isCoreLibraryDesugaringEnabled = true
         sourceCompatibility = JavaVersion.VERSION_1_8
         targetCompatibility = JavaVersion.VERSION_1_8
     }
@@ -77,6 +88,7 @@ android {
     }
     testOptions {
         unitTests.isReturnDefaultValues = true
+        unitTests.isIncludeAndroidResources = true
     }
 }
 
@@ -129,6 +141,8 @@ dependencies {
     testImplementation("io.mockk:mockk:1.13.10")
     testImplementation("com.google.truth:truth:1.4.2")
     testImplementation("org.robolectric:robolectric:4.11.1")
+    testImplementation(platform(libs.androidx.compose.bom))
+    testImplementation(libs.androidx.ui.test.junit4)
     testImplementation("org.mockito:mockito-core:5.8.0")
     testImplementation("androidx.work:work-testing:2.9.0")
     androidTestImplementation(libs.androidx.junit)
@@ -138,8 +152,9 @@ dependencies {
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
     
-    // NewPipeExtractor (REMOVIDO - Lógica movida al Backend BFF)
-    // implementation(libs.newpipe.extractor)
+    // Local YouTube extraction (no mandatory BFF).
+    implementation(libs.newpipe.extractor)
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs_nio:2.0.1")
 
     // WorkManager + Hilt Worker support
     implementation(libs.androidx.work.runtime.ktx)

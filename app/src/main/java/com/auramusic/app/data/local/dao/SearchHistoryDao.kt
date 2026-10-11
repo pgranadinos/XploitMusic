@@ -10,8 +10,8 @@ import kotlinx.coroutines.flow.Flow
 @Dao
 interface SearchHistoryDao {
 
-    /** Observe the most recent 20 searches, ordered by most recent first */
-    @Query("SELECT * FROM recent_searches ORDER BY searchedAt DESC LIMIT 20")
+    /** Observe the most recent 10 searches, ordered by most recent first */
+    @Query("SELECT * FROM recent_searches ORDER BY searchedAt DESC LIMIT 10")
     fun getRecentSearches(): Flow<List<SearchHistoryEntity>>
 
     /** Find history entries matching a partial query (for suggestion ranking) */

@@ -1,15 +1,11 @@
 package com.auramusic.app.domain.usecase
 
 import android.util.Log
-import com.auramusic.app.data.local.dao.PlaylistDao
-import com.auramusic.app.data.local.dao.SongDao
-import com.auramusic.app.data.local.entity.PlaylistEntity
-import com.auramusic.app.data.local.entity.PlaylistSongCrossRef
-import com.auramusic.app.data.local.entity.SongEntity
 import com.auramusic.app.data.remote.SpotifyPlaylistDto
 import com.auramusic.app.data.remote.SpotifyTrackDto
 import com.auramusic.app.data.repository.SpotifyMatchingEngine
 import com.auramusic.app.data.repository.SpotifyMatchingEngine.MatchType
+import com.auramusic.app.data.repository.SpotifyPlaylistPersister
 import com.auramusic.app.domain.model.Song
 import com.auramusic.app.domain.provider.ProviderGateway
 import com.auramusic.app.domain.repository.SpotifyRepository
@@ -28,6 +24,11 @@ sealed class TrackImportStatus {
     ) : TrackImportStatus()
 
     data class NoMatch(val spotifyTrack: SpotifyTrackDto) : TrackImportStatus()
+    data class LowConfidence(
+        val spotifyTrack: SpotifyTrackDto,
+        val candidate: Song,
+        val score: Float
+    ) : TrackImportStatus()
     data class Failed(val spotifyTrack: SpotifyTrackDto, val error: String) : TrackImportStatus()
 }
 
@@ -38,7 +39,11 @@ data class ImportProgress(
     val latestStatus: TrackImportStatus?,
     val isComplete: Boolean = false,
     /** ID de Room de la playlist creada, disponible solo cuando isComplete=true */
-    val createdPlaylistId: Long? = null
+    val createdPlaylistId: Long? = null,
+    val matchedTracks: Int = 0,
+    val skippedTracks: Int = 0,
+    val failedTracks: Int = 0,
+    val errorMessage: String? = null
 )
 
 // ─── Use Case ─────────────────────────────────────────────────────────────────
@@ -47,8 +52,7 @@ class ImportPlaylistUseCase @Inject constructor(
     private val spotifyRepository: SpotifyRepository,
     private val gateway: ProviderGateway,
     private val matchingEngine: SpotifyMatchingEngine,
-    private val playlistDao: PlaylistDao,
-    private val songDao: SongDao
+    private val persister: SpotifyPlaylistPersister
 ) {
     companion object {
         private const val TAG = "ImportPlaylistUseCase"
@@ -59,39 +63,115 @@ class ImportPlaylistUseCase @Inject constructor(
         val tracksResult = spotifyRepository.getAllPlaylistTracks(playlist.id)
         val tracks = tracksResult.getOrElse {
             Log.e(TAG, "Error fetching tracks: ${it.message}")
-            emit(ImportProgress(playlist, 0, 0, null, isComplete = true))
+            emit(
+                ImportProgress(
+                    playlist = playlist,
+                    totalTracks = 0,
+                    processedTracks = 0,
+                    latestStatus = null,
+                    errorMessage = "No se pudieron obtener las canciones: ${it.message ?: "error de Spotify"}"
+                )
+            )
             return@flow
         }
 
         val total = tracks.size
         val matchedSongs = mutableListOf<Song>()
         var processed = 0
+        var matched = 0
+        var skipped = 0
+        var failed = 0
 
         for (track in tracks) {
             val status: TrackImportStatus = try {
                 val candidates = gateway.search(buildSearchQuery(track))
-                    .getOrNull()?.take(MAX_CANDIDATES) ?: emptyList()
+                    .getOrThrow()
+                    .take(MAX_CANDIDATES)
 
                 val result = matchingEngine.findBestMatch(track, candidates)
 
-                if (result.matchType != MatchType.NO_MATCH && result.candidate != null) {
-                    matchedSongs.add(result.candidate)
-                    TrackImportStatus.Matched(track, result.candidate, result.matchType, result.score)
-                } else {
-                    TrackImportStatus.NoMatch(track)
+                when {
+                    result.candidate == null || result.matchType == MatchType.NO_MATCH -> {
+                        skipped++
+                        TrackImportStatus.NoMatch(track)
+                    }
+                    result.matchType == MatchType.LOW_CONFIDENCE -> {
+                        skipped++
+                        TrackImportStatus.LowConfidence(track, result.candidate, result.score)
+                    }
+                    else -> {
+                        matchedSongs.add(result.candidate)
+                        matched++
+                        TrackImportStatus.Matched(track, result.candidate, result.matchType, result.score)
+                    }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Match failed for '${track.name}': ${e.message}")
+                failed++
                 TrackImportStatus.Failed(track, e.message ?: "Error desconocido")
             }
 
             processed++
-            emit(ImportProgress(playlist, total, processed, status))
+            emit(
+                ImportProgress(
+                    playlist = playlist,
+                    totalTracks = total,
+                    processedTracks = processed,
+                    latestStatus = status,
+                    matchedTracks = matched,
+                    skippedTracks = skipped,
+                    failedTracks = failed
+                )
+            )
         }
 
-        // Persistir en Room
-        val createdId = persistToRoom(playlist, matchedSongs)
-        emit(ImportProgress(playlist, total, processed, null, isComplete = true, createdPlaylistId = createdId))
+        if (matchedSongs.isEmpty() && failed > 0) {
+            emit(
+                ImportProgress(
+                    playlist = playlist,
+                    totalTracks = total,
+                    processedTracks = processed,
+                    latestStatus = null,
+                    matchedTracks = matched,
+                    skippedTracks = skipped,
+                    failedTracks = failed,
+                    errorMessage = "No se pudo completar la búsqueda de canciones. Revisa la conexión e inténtalo nuevamente."
+                )
+            )
+            return@flow
+        }
+
+        val createdId = try {
+            persister.persist(playlist, matchedSongs)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error persisting playlist: ${e.message}", e)
+            emit(
+                ImportProgress(
+                    playlist = playlist,
+                    totalTracks = total,
+                    processedTracks = processed,
+                    latestStatus = null,
+                    matchedTracks = matched,
+                    skippedTracks = skipped,
+                    failedTracks = failed,
+                    errorMessage = "No se pudo guardar la playlist: ${e.message ?: "error local"}"
+                )
+            )
+            return@flow
+        }
+        emit(
+            ImportProgress(
+                playlist = playlist,
+                totalTracks = total,
+                processedTracks = processed,
+                latestStatus = null,
+                isComplete = true,
+                createdPlaylistId = createdId,
+                matchedTracks = matched,
+                skippedTracks = skipped,
+                failedTracks = failed
+            )
+        )
         Log.d(TAG, "Import complete: ${matchedSongs.size}/$total songs matched")
     }
 
@@ -104,38 +184,4 @@ class ImportPlaylistUseCase @Inject constructor(
         return "$cleanTitle $artist"
     }
 
-    private suspend fun persistToRoom(playlist: SpotifyPlaylistDto, songs: List<Song>): Long? {
-        return try {
-            val playlistId = playlistDao.createPlaylist(
-                PlaylistEntity(
-                    name     = "\uD83C\uDFB5 ${playlist.name}",
-                    coverUrl = playlist.images?.firstOrNull()?.url
-                )
-            )
-
-            songs.forEachIndexed { index, song ->
-                songDao.upsertNetworkSong(
-                    SongEntity(
-                        id              = song.id,
-                        title           = song.title,
-                        artist          = song.artist,
-                        thumbnailUrl    = song.thumbnailUrl,
-                        durationSeconds = song.durationSeconds
-                    )
-                )
-                playlistDao.insertPlaylistSongCrossRef(
-                    PlaylistSongCrossRef(
-                        playlistId = playlistId,
-                        songId     = song.id,
-                        position   = index
-                    )
-                )
-            }
-            Log.d(TAG, "Persisted '${playlist.name}' (id=$playlistId) with ${songs.size} songs")
-            playlistId
-        } catch (e: Exception) {
-            Log.e(TAG, "Error persisting playlist: ${e.message}", e)
-            null
-        }
-    }
 }

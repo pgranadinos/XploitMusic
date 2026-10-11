@@ -1,6 +1,9 @@
 package com.auramusic.app
 
 import android.app.Application
+import androidx.hilt.work.HiltWorkerFactory
+import androidx.work.Configuration
+import androidx.work.WorkerFactory
 import coil.ImageLoader
 import coil.ImageLoaderFactory
 import coil.disk.DiskCache
@@ -11,10 +14,16 @@ import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
 
 @HiltAndroidApp
-class AuraApp : Application(), ImageLoaderFactory {
+class AuraApp : Application(), ImageLoaderFactory, Configuration.Provider {
 
     @Inject
     lateinit var offlineManager: OfflineManager
+
+    @Inject
+    lateinit var workerFactory: HiltWorkerFactory
+
+    override val workManagerConfiguration: Configuration
+        get() = createWorkManagerConfiguration(workerFactory)
 
     override fun onCreate() {
         super.onCreate()
@@ -42,3 +51,8 @@ class AuraApp : Application(), ImageLoaderFactory {
             .build()
     }
 }
+
+internal fun createWorkManagerConfiguration(workerFactory: WorkerFactory): Configuration =
+    Configuration.Builder()
+        .setWorkerFactory(workerFactory)
+        .build()

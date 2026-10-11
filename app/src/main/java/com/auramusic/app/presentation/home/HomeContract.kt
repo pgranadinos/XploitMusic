@@ -1,6 +1,7 @@
 package com.auramusic.app.presentation.home
 
 import com.auramusic.app.domain.model.Song
+import com.auramusic.app.domain.model.LatamCharts
 
 // ----------------------------------------------------
 // UI Models for the Home Redesign
@@ -47,7 +48,7 @@ data class HomeUiState(
     val quickPicks: SectionState<List<QuickPickItem>> = SectionState.Loading,
     val jumpBackIn: SectionState<List<HistoryContext>> = SectionState.Loading,
     val artistMixes: SectionState<List<UiPlaylist>> = SectionState.Loading,
-    val localTrends: SectionState<List<Song>> = SectionState.Loading,
+    val latamCharts: SectionState<LatamCharts> = SectionState.Loading,
     val recommendations: SectionState<List<Song>> = SectionState.Loading,
     val mostPlayed: SectionState<List<Song>> = SectionState.Loading,
     val recents: SectionState<List<Song>> = SectionState.Loading
@@ -58,6 +59,6 @@ sealed class HomeAction {
     object RetryQuickPicks : HomeAction()
     object RetryJumpBackIn : HomeAction()
     object RetryArtistMixes : HomeAction()
-    object RetryLocalTrends : HomeAction()
+    object RetryLatamCharts : HomeAction()
     object RetryRecommendations : HomeAction()
 }

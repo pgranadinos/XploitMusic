@@ -42,7 +42,9 @@ class PipedProvider @Inject constructor(
     }
 
     override suspend fun getStream(videoId: String): Result<String> {
-        return executeWithRetry(providerId, maxRetries = 2) {
+        // Gateway already tries other providers; avoid spending up to 27 s
+        // retrying one source during an automatic track transition.
+        return executeWithRetry(providerId, timeoutMs = 6_000L, maxRetries = 0) {
             val response = api.getStream(videoId)
             val stream = response.audioStreams.maxByOrNull { it.bitrate }
             stream?.url ?: throw ProviderError.NotFound(providerId)
@@ -52,7 +54,7 @@ class PipedProvider @Inject constructor(
     override suspend fun getRelated(videoId: String): Result<List<Song>> {
         return executeWithRetry(providerId) {
             val response = api.getStream(videoId)
-            response.relatedStreams?.map {
+            val songs = response.relatedStreams?.map {
                 Song(
                     id = it.url.removePrefix("/watch?v="),
                     title = it.title,
@@ -60,14 +62,16 @@ class PipedProvider @Inject constructor(
                     thumbnailUrl = it.thumbnail ?: "",
                     durationSeconds = it.duration
                 )
-            } ?: emptyList()
+            }.orEmpty()
+            if (songs.isEmpty()) throw ProviderError.NotFound(providerId)
+            songs
         }
     }
 
     override suspend fun getTrending(region: String): Result<List<Song>> {
         return executeWithRetry(providerId) {
             val response = api.getTrending(region)
-            response.map {
+            val songs = response.map {
                 Song(
                     id = it.url.removePrefix("/watch?v="),
                     title = it.title,
@@ -76,6 +80,8 @@ class PipedProvider @Inject constructor(
                     durationSeconds = it.duration
                 )
             }
+            if (songs.isEmpty()) throw ProviderError.NotFound(providerId)
+            songs
         }
     }
 }

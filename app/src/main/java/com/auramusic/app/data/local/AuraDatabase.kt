@@ -28,7 +28,7 @@ import com.auramusic.app.data.local.entity.SpotifyTokenEntity
         PlayHistoryEntity::class,
         SpotifyTokenEntity::class
     ],
-    version = 9,
+    version = 10,
     exportSchema = true
 )
 abstract class AuraDatabase : RoomDatabase() {
@@ -68,6 +68,17 @@ abstract class AuraDatabase : RoomDatabase() {
                 database.execSQL("CREATE INDEX IF NOT EXISTS `index_songs_isFavorite` ON `songs` (`isFavorite`)")
                 database.execSQL("CREATE INDEX IF NOT EXISTS `index_songs_lastPlayedAt` ON `songs` (`lastPlayedAt`)")
                 database.execSQL("CREATE INDEX IF NOT EXISTS `index_playlist_song_cross_ref_songId` ON `playlist_song_cross_ref` (`songId`)")
+            }
+        }
+
+        val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE playlists ADD COLUMN source TEXT DEFAULT NULL")
+                database.execSQL("ALTER TABLE playlists ADD COLUMN sourceId TEXT DEFAULT NULL")
+                database.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS `index_playlists_source_sourceId` " +
+                        "ON `playlists` (`source`, `sourceId`)"
+                )
             }
         }
     }

@@ -1,0 +1,28 @@
+# Android / Gradle
+.gradle/
+.idea/
+build/
+**/build/
+local.properties
+*.apk
+*.aab
+
+# Logs y archivos temporales
+*.log
+build_log*.txt
+build_output.txt
+crash_log.txt
+fatal_crash.txt
+kapt_error.txt
+error_body.json
+*_debug.png
+
+# Secretos
+*.jks
+*.keystore
+.env
+**/.env
+google-services.json
+
+# Backend (Node)
+aura-backend/node_modules/

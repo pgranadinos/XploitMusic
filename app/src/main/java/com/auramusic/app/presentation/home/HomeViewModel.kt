@@ -15,6 +15,7 @@ import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.debounce
@@ -30,10 +31,14 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import javax.inject.Inject
 
 import com.auramusic.app.data.local.dao.PlayHistoryDao
 import kotlinx.coroutines.flow.update
+import com.auramusic.app.domain.recommendation.SongRecommendationSelector
 @OptIn(FlowPreview::class)
 @HiltViewModel
 class HomeViewModel @Inject constructor(
@@ -51,6 +56,8 @@ class HomeViewModel @Inject constructor(
     // Active search job — cancelled on each new query to avoid stale results
     private var searchJob: Job? = null
     private var suggestionsJob: Job? = null
+    private var latamChartsJob: Job? = null
+    private var recommendationsJob: Job? = null
 
     // Search query
     private val _searchQuery = MutableStateFlow("")
@@ -70,6 +77,11 @@ class HomeViewModel @Inject constructor(
 
     // Recent searches (for initial dropdown when search bar is focused)
     val recentSearches = searchHistoryDao.getRecentSearches()
+        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
+    // Convenience: recent search strings for simple UI lists
+    val recentSearchStrings: StateFlow<List<String>> = searchHistoryDao.getRecentSearches()
+        .map { entities -> entities.map { it.displayQuery } }
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     // Sections
@@ -170,6 +182,13 @@ class HomeViewModel @Inject constructor(
     // Deprecated helpers for retro-compatibility with HomeScreen
     fun onSearchQueryChange(query: String) = processAction(SearchAction.UpdateQuery(query))
     fun onSuggestionSelected(text: String) = processAction(SearchAction.SelectSuggestion(text))
+
+    /** Called when user taps a recent search chip — relaunches the search */
+    fun onRecentSearchClick(query: String) {
+        _searchQuery.value = query
+        _suggestions.value = emptyList()
+        manualSearchTrigger.tryEmit(query)
+    }
 
     /**
      * Load suggestions from 2 sources:
@@ -310,13 +329,19 @@ class HomeViewModel @Inject constructor(
         }
     }
 
-    /** Persist search query to Room for history/suggestions */
+    /** Persist search query to Room for history/suggestions.
+     *  - Ignores empty or very short queries (< 3 chars) to avoid saving partial typing.
+     *  - Deduplicates case-insensitively via lowercase key.
+     *  - Room LIMIT 10 + ORDER BY searchedAt DESC ensures max 10, ordered by recency.
+     */
     private suspend fun recordSearchHistory(query: String) {
+        val trimmed = query.trim()
+        if (trimmed.length < 3) return // Don't save very short queries
         try {
             searchHistoryDao.upsert(
                 SearchHistoryEntity(
-                    query = query.lowercase().trim(),
-                    displayQuery = query.trim(),
+                    query = trimmed.lowercase(),
+                    displayQuery = trimmed,
                     searchedAt = System.currentTimeMillis()
                 )
             )
@@ -355,20 +380,20 @@ class HomeViewModel @Inject constructor(
 
     fun processHomeAction(action: HomeAction) {
         when (action) {
-            is HomeAction.RefreshAll -> loadHomeSections()
+            is HomeAction.RefreshAll -> loadHomeSections(forceRefresh = true)
             is HomeAction.RetryQuickPicks -> loadQuickPicks()
             is HomeAction.RetryJumpBackIn -> loadJumpBackIn()
             is HomeAction.RetryArtistMixes -> loadArtistMixes()
-            is HomeAction.RetryLocalTrends -> loadLocalTrends()
+            is HomeAction.RetryLatamCharts -> loadLatamCharts(forceRefresh = true)
             is HomeAction.RetryRecommendations -> loadRecommendationsV2()
         }
     }
 
-    private fun loadHomeSections() {
+    private fun loadHomeSections(forceRefresh: Boolean = false) {
         loadQuickPicks()
         loadJumpBackIn()
         loadArtistMixes()
-        loadLocalTrends()
+        loadLatamCharts(forceRefresh)
         loadRecommendationsV2()
     }
 
@@ -376,18 +401,11 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch {
             _homeUiState.update { it.copy(quickPicks = SectionState.Loading) }
             try {
-                // Get favorites as source for Quick Picks
-                val favs = favoritesRepository.getFavorites().first()
-                val sourceSongs = if (favs.isNotEmpty()) {
-                    favs.take(6)
+                val regionalMusic = streamRepository.getTrending("PE")
+                val sourceSongs = if (regionalMusic is Resource.Success) {
+                    regionalMusic.data?.take(6).orEmpty()
                 } else {
-                    // FALLBACK: Use Trending if no favorites yet (New Install)
-                    val trending = streamRepository.getTrending()
-                    if (trending is Resource.Success) {
-                        trending.data?.take(6) ?: emptyList()
-                    } else {
-                        emptyList()
-                    }
+                    emptyList()
                 }
 
                 if (sourceSongs.isNotEmpty()) {
@@ -405,7 +423,7 @@ class HomeViewModel @Inject constructor(
                     _homeUiState.update { it.copy(quickPicks = SectionState.Empty) }
                 }
             } catch (e: Exception) {
-                _homeUiState.update { it.copy(quickPicks = SectionState.Error("Error cargando Quick Picks")) }
+                _homeUiState.update { it.copy(quickPicks = SectionState.Error("Error cargando música de Perú")) }
             }
         }
     }
@@ -466,61 +484,86 @@ class HomeViewModel @Inject constructor(
         }
     }
 
-    private fun loadLocalTrends() {
-        viewModelScope.launch {
-            _homeUiState.update { it.copy(localTrends = SectionState.Loading) }
+    private fun loadLatamCharts(forceRefresh: Boolean = false) {
+        latamChartsJob?.cancel()
+        latamChartsJob = viewModelScope.launch {
+            _homeUiState.update { it.copy(latamCharts = SectionState.Loading) }
             try {
-                val result = streamRepository.getTrending()
+                val result = streamRepository.getLatamCharts(forceRefresh)
                 when (result) {
                     is Resource.Success -> {
-                        if (result.data.isNullOrEmpty()) {
-                            _homeUiState.update { it.copy(localTrends = SectionState.Empty) }
+                        val chart = result.data
+                        if (chart == null || chart.entries.isEmpty()) {
+                            _homeUiState.update { it.copy(latamCharts = SectionState.Empty) }
                         } else {
-                            val taking = result.data.take(15)
-                            _homeUiState.update { it.copy(localTrends = SectionState.Success(taking)) }
+                            _homeUiState.update { it.copy(latamCharts = SectionState.Success(chart)) }
                         }
                     }
                     is Resource.Error -> {
-                        _homeUiState.update { it.copy(localTrends = SectionState.Error(result.message ?: "Error de red")) }
+                        _homeUiState.update { it.copy(latamCharts = SectionState.Error(result.message ?: "Error de red")) }
                     }
                     else -> {}
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                _homeUiState.update { it.copy(localTrends = SectionState.Error("Error inesperado")) }
+                _homeUiState.update { it.copy(latamCharts = SectionState.Error("No se pudieron cargar los rankings de Latinoamérica")) }
             }
         }
     }
 
     private fun loadRecommendationsV2() {
-        viewModelScope.launch {
+        recommendationsJob?.cancel()
+        recommendationsJob = viewModelScope.launch {
             _homeUiState.update { it.copy(recommendations = SectionState.Loading) }
             try {
                 val favs = favoritesRepository.getFavorites().first()
-                if (favs.isNotEmpty()) {
-                    val seed = favs.random()
-                    val result = streamRepository.getRelatedSongs(seed.id)
-                    when (result) {
-                        is Resource.Success -> {
-                            if (result.data.isNullOrEmpty()) {
-                                _homeUiState.update { it.copy(recommendations = SectionState.Empty) }
-                            } else {
-                                val favIds = favs.map { it.id }.toSet()
-                                val filtered = result.data.filter { !favIds.contains(it.id) }.take(15)
-                                _homeUiState.update { it.copy(recommendations = SectionState.Success(filtered)) }
-                            }
+                val mostPlayed = favoritesRepository.getMostPlayed().first()
+                val recents = favoritesRepository.getRecents().first()
+                val seeds = (favs.take(3) + mostPlayed.take(3) + recents.take(2))
+                    .distinctBy { it.id }
+                    .take(4)
+                val preferredArtists = (favs + mostPlayed).map { it.artist }
+                val excludedIds = (seeds + recents.take(12)).mapTo(mutableSetOf()) { it.id }
+
+                val related = coroutineScope {
+                    seeds.map { seed -> async {
+                        try {
+                            val result = streamRepository.getRelatedSongs(seed.id)
+                            if (result is Resource.Success) result.data.orEmpty() else emptyList()
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (error: Exception) {
+                            Log.w(TAG, "HomeVM: Related recommendations failed for ${seed.id}", error)
+                            emptyList()
                         }
-                        is Resource.Error -> _homeUiState.update { it.copy(recommendations = SectionState.Error("Error al recomendar")) }
-                        else -> {}
-                    }
-                } else {
-                    val result = streamRepository.getDiscovery()
-                    if (result is Resource.Success && !result.data.isNullOrEmpty()) {
-                        _homeUiState.update { it.copy(recommendations = SectionState.Success(result.data.take(15))) }
-                    } else {
-                        _homeUiState.update { it.copy(recommendations = SectionState.Empty) }
+                    } }.awaitAll().flatten()
+                }
+                var recommendations = SongRecommendationSelector.select(
+                    candidates = related,
+                    preferredArtists = preferredArtists,
+                    excludedIds = excludedIds,
+                    limit = 15
+                )
+                if (recommendations.size < 8) {
+                    val discovery = streamRepository.getDiscovery()
+                    if (discovery is Resource.Success) {
+                        recommendations = SongRecommendationSelector.select(
+                            candidates = related + discovery.data.orEmpty(),
+                            preferredArtists = preferredArtists,
+                            excludedIds = excludedIds,
+                            limit = 15
+                        )
                     }
                 }
+                _homeUiState.update {
+                    it.copy(recommendations = if (recommendations.isEmpty()) SectionState.Empty
+                    else SectionState.Success(recommendations))
+                }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
+                Log.w(TAG, "HomeVM: Recommendation load failed", e)
                 _homeUiState.update { it.copy(recommendations = SectionState.Error("Error inesperado")) }
             }
         }

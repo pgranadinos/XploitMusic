@@ -9,7 +9,7 @@ interface LrcLibApi {
     suspend fun getLyrics(
         @Query("track_name") trackName: String,
         @Query("artist_name") artistName: String,
-        @Query("duration") duration: Double
+        @Query("duration") duration: Double?
     ): LrcLibResponse
     
     @GET("api/search")

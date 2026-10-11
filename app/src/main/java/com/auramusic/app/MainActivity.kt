@@ -16,6 +16,7 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavDestination.Companion.hierarchy
@@ -33,18 +34,24 @@ class MainActivity : ComponentActivity() {
 
     // Mutable state observed by Compose to trigger navigation to player
     private var _openPlayerState = mutableStateOf(false)
+    private var _openSpotifyImportState = mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         _openPlayerState.value = isPlayerIntent(intent)
-        handleSpotifyIntent(intent)
+        _openSpotifyImportState.value = isSpotifyImportIntent(intent)
         setContent {
             XploitMusicTheme {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    XploitAppNavigation(openPlayer = _openPlayerState.value)
+                    XploitAppNavigation(
+                        openPlayer = _openPlayerState.value,
+                        onPlayerOpened = { _openPlayerState.value = false },
+                        openSpotifyImport = _openSpotifyImportState.value,
+                        onSpotifyImportOpened = { _openSpotifyImportState.value = false }
+                    )
                 }
             }
         }
@@ -54,21 +61,19 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        handleSpotifyIntent(intent)
+        if (isSpotifyImportIntent(intent)) {
+            _openSpotifyImportState.value = true
+        }
         if (isPlayerIntent(intent)) {
             _openPlayerState.value = true
         }
     }
 
-    private fun handleSpotifyIntent(intent: Intent?) {
-        if (intent == null) return
-        val data = intent.data
-        if (data != null && data.scheme == "auramusic" && data.host == "spotify" && data.path?.startsWith("/callback") == true) {
-            val code = data.getQueryParameter("code")
-            if (code != null) {
-                com.auramusic.app.presentation.library.SpotifyAuthManager.codeResult.value = code
-            }
-        }
+    private fun isSpotifyImportIntent(intent: Intent?): Boolean {
+        val data = intent?.data ?: return false
+        return data.scheme == "app" &&
+            data.host == "xploitmusic" &&
+            data.path == "/spotify-import"
     }
 
     /**
@@ -94,7 +99,12 @@ private data class BottomNavItem(
 )
 
 @Composable
-fun XploitAppNavigation(openPlayer: Boolean = false) {
+fun XploitAppNavigation(
+    openPlayer: Boolean = false,
+    onPlayerOpened: () -> Unit = {},
+    openSpotifyImport: Boolean = false,
+    onSpotifyImportOpened: () -> Unit = {}
+) {
     val navController = rememberNavController()
 
     // ── PlayerViewModel scoped to the Activity ───────────────────────────────
@@ -105,12 +115,23 @@ fun XploitAppNavigation(openPlayer: Boolean = false) {
     val playerViewModel: com.auramusic.app.presentation.player.PlayerViewModel =
         hiltViewModel(context as androidx.activity.ComponentActivity)
 
-    // If launched from notification, navigate to player immediately
+    // If launched from notification/deep link, navigate to player immediately
+    // CRITICAL: Reset the trigger after navigating to prevent infinite re-navigation
     LaunchedEffect(openPlayer) {
         if (openPlayer) {
             navController.navigate("player") {
                 launchSingleTop = true
             }
+            onPlayerOpened()
+        }
+    }
+
+    LaunchedEffect(openSpotifyImport) {
+        if (openSpotifyImport) {
+            navController.navigate("spotifyImport") {
+                launchSingleTop = true
+            }
+            onSpotifyImportOpened()
         }
     }
 
@@ -126,6 +147,8 @@ fun XploitAppNavigation(openPlayer: Boolean = false) {
     val isOnPlayerScreen = currentRoute == "player"
 
     Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        contentColor = MaterialTheme.colorScheme.onBackground,
         bottomBar = {
             // Hide the entire bottom bar area when the full player is open
             if (!isOnPlayerScreen) {
@@ -143,41 +166,56 @@ fun XploitAppNavigation(openPlayer: Boolean = false) {
                     )
 
                     // ── Bottom Navigation Bar ─────────────────────────────────────
-                    NavigationBar(
-                        containerColor = MaterialTheme.colorScheme.surface,
-                        tonalElevation = 8.dp
+                    Surface(
+                        color = MaterialTheme.colorScheme.surface,
+                        shadowElevation = 12.dp
                     ) {
-                        bottomNavItems.forEach { item ->
-                            val selected = navBackStackEntry?.destination?.hierarchy?.any {
-                                it.route == item.route
-                            } == true
-
-                            NavigationBarItem(
-                                icon = {
-                                    Icon(
-                                        item.icon,
-                                        contentDescription = item.label
-                                    )
-                                },
-                                label = { Text(item.label) },
-                                selected = selected,
-                                onClick = {
-                                    navController.navigate(item.route) {
-                                        popUpTo(navController.graph.findStartDestination().id) {
-                                            saveState = true
-                                        }
-                                        launchSingleTop = true
-                                        restoreState = true
-                                    }
-                                },
-                                colors = NavigationBarItemDefaults.colors(
-                                    selectedIconColor = MaterialTheme.colorScheme.primary,
-                                    selectedTextColor = MaterialTheme.colorScheme.primary,
-                                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
-                                )
+                        Column {
+                            HorizontalDivider(
+                                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.38f)
                             )
+                            NavigationBar(
+                                containerColor = MaterialTheme.colorScheme.surface,
+                                tonalElevation = 0.dp
+                            ) {
+                                bottomNavItems.forEach { item ->
+                                    val selected = navBackStackEntry?.destination?.hierarchy?.any {
+                                        it.route == item.route
+                                    } == true
+
+                                    NavigationBarItem(
+                                        icon = {
+                                            Icon(
+                                                item.icon,
+                                                contentDescription = item.label
+                                            )
+                                        },
+                                        label = {
+                                            Text(
+                                                text = item.label,
+                                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
+                                            )
+                                        },
+                                        selected = selected,
+                                        onClick = {
+                                            navController.navigate(item.route) {
+                                                popUpTo(navController.graph.findStartDestination().id) {
+                                                    saveState = true
+                                                }
+                                                launchSingleTop = true
+                                                restoreState = true
+                                            }
+                                        },
+                                        colors = NavigationBarItemDefaults.colors(
+                                            selectedIconColor = MaterialTheme.colorScheme.primary,
+                                            selectedTextColor = MaterialTheme.colorScheme.onSurface,
+                                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+                                        )
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -213,14 +251,12 @@ fun XploitAppNavigation(openPlayer: Boolean = false) {
                     },
                     onNavigateToSpotifyImport = {
                         navController.navigate("spotifyImport")
-                    }
-                )
-            }
-            composable("search") {
-                com.auramusic.app.presentation.search.SearchScreen(
-                    onSongClick = { song ->
-                        playerViewModel.playSingleSong(song)
-                        navController.navigate("player")
+                    },
+                    onNavigateToDownloads = {
+                        navController.navigate("downloads")
+                    },
+                    onNavigateToLocal = {
+                        navController.navigate("local")
                     }
                 )
             }
@@ -230,14 +266,20 @@ fun XploitAppNavigation(openPlayer: Boolean = false) {
                 )
             }
             composable("downloads") {
-                com.auramusic.app.presentation.downloads.DownloadsScreen()
+                com.auramusic.app.presentation.downloads.DownloadsScreen(
+                    onSongClick = { song, playlist ->
+                        playerViewModel.playSong(song, playlist)
+                        navController.navigate("player")
+                    }
+                )
             }
             composable("local") {
                 com.auramusic.app.presentation.local.LocalMusicScreen(
                     onSongClick = { song, playlist ->
                         playerViewModel.playSong(song, playlist)
                         navController.navigate("player")
-                    }
+                    },
+                    onNavigateBack = { navController.popBackStack() }
                 )
             }
             composable(
@@ -248,6 +290,12 @@ fun XploitAppNavigation(openPlayer: Boolean = false) {
             ) {
                 com.auramusic.app.presentation.player.PlayerScreen(
                     onBackClick = { navController.popBackStack() },
+                    onEmptySession = {
+                        navController.navigate("home") {
+                            popUpTo(navController.graph.id) { inclusive = false }
+                            launchSingleTop = true
+                        }
+                    },
                     viewModel = playerViewModel
                 )
             }

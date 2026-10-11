@@ -45,7 +45,8 @@ class BffProvider @Inject constructor(
     }
 
     override suspend fun getStream(videoId: String): Result<String> {
-        return executeWithRetry(providerId, timeoutMs = 3000L) {
+        // Local yt-dlp extraction is slower than a public API on a cold request.
+        return executeWithRetry(providerId, timeoutMs = 30_000L, maxRetries = 0) {
             val response = api.getStream(videoId)
             // FIX: validar que streamUrl no sea null/vacío (BFF puede omitirlo en error)
             val url = response.streamUrl
@@ -82,7 +83,8 @@ class BffProvider @Inject constructor(
         return executeWithRetry(providerId, timeoutMs = 3000L) {
             val response = api.getHomeFeed()
             val trendingCarousel = response.carousels.find { it.type == "trending" }
-            trendingCarousel?.items?.map {
+                ?: throw ProviderError.NotFound(providerId)
+            val songs = trendingCarousel.items.map {
                 Song(
                     id = it.id,
                     title = it.title,
@@ -90,7 +92,9 @@ class BffProvider @Inject constructor(
                     thumbnailUrl = it.thumbnailUrl,
                     durationSeconds = it.durationSeconds.toLong()
                 )
-            } ?: emptyList()
+            }
+            if (songs.isEmpty()) throw ProviderError.NotFound(providerId)
+            songs
         }
     }
 }

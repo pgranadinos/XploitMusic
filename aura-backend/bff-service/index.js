@@ -4,7 +4,10 @@ const cors = require('cors');
 const { createClient } = require('redis');
 const axios = require('axios');
 const path = require('path');
-const youtubedl = require('youtube-dl-exec');
+const youtubeDlExec = require('youtube-dl-exec');
+
+const ytDlpPath = path.join(__dirname, 'yt-dlp.exe');
+const youtubedl = youtubeDlExec.create(ytDlpPath);
 
 const app = express();
 const port = process.env.PORT || 8080;
@@ -17,6 +20,13 @@ let useRedis = false;
 let memoryCache = {}; // Fallback in-memory cache
 
 async function setupRedis() {
+    // Redis is optional in local development. Without an explicit host, use the
+    // in-memory cache immediately instead of delaying or blocking server startup.
+    if (!process.env.REDIS_HOST) {
+        console.warn('⚠️ REDIS_HOST no configurado. Usando caché en memoria RAM.');
+        return;
+    }
+
     try {
         redisClient = createClient({
             url: `redis://${process.env.REDIS_HOST || 'localhost'}:6379`,
@@ -109,9 +119,13 @@ async function startServer() {
             const response = await axios.get(url, { timeout: 8000 });
             if (response.status === 200 && response.data) {
                 // Validación básica de forma según el path
-                if (path.includes('/streams/') && !response.data.audioStreams) {
-                     console.log(`[Mirror Check] ${instance} NO tiene audioStreams (Data Keys: ${Object.keys(response.data).length})`);
-                     throw new Error(`Mirror ${instance} no devolvió audioStreams`);
+                if (path.includes('/streams/')) {
+                    const audioStreams = response.data.audioStreams;
+                    const hasPlayableAudio = Array.isArray(audioStreams) && audioStreams.some(stream => stream?.url);
+                    if (!hasPlayableAudio) {
+                        console.log(`[Mirror Check] ${instance} NO tiene audio reproducible`);
+                        throw new Error(`Mirror ${instance} no devolvió URLs de audio`);
+                    }
                 }
                 if (path.includes('/search') && !response.data.items) {
                      console.log(`[Mirror Check] ${instance} NO tiene items`);
@@ -214,6 +228,39 @@ async function startServer() {
         }
     });
 
+    // GET /api/v1/stream/:trackId/related
+    app.get('/api/v1/stream/:trackId/related', async (req, res) => {
+        const { trackId } = req.params;
+        const requestedLimit = Number.parseInt(req.query.limit, 10);
+        const limit = Number.isInteger(requestedLimit)
+            ? Math.min(Math.max(requestedLimit, 1), 50)
+            : 15;
+
+        try {
+            const response = await pipedFetch(`/streams/${encodeURIComponent(trackId)}`);
+            const items = (response.data.relatedStreams || [])
+                .filter(item => item?.url)
+                .slice(0, limit)
+                .map(item => ({
+                    id: item.url.replace('/watch?v=', '').split('&')[0],
+                    title: item.title || 'Unknown',
+                    artist: item.uploaderName || 'Unknown Artist',
+                    durationSeconds: item.duration || 0,
+                    thumbnailUrl: item.thumbnail || ''
+                }))
+                .filter(item => item.id);
+
+            if (items.length === 0) {
+                return res.status(404).json({ error: 'No se encontraron canciones relacionadas.' });
+            }
+
+            return res.json({ trackId, items });
+        } catch (error) {
+            console.error(`Related tracks error for '${trackId}':`, error.message);
+            return res.status(502).json({ error: 'Error obteniendo canciones relacionadas.' });
+        }
+    });
+
     // GET /api/v1/stream/:trackId
     app.get('/api/v1/stream/:trackId', async (req, res) => {
         const { trackId } = req.params;
@@ -258,13 +305,13 @@ async function startServer() {
             // 3. Intento via yt-dlp local (Robusto pero más lento)
             if (!bestStreamUrl) {
                 try {
-                    const ytDlpPath = path.join(__dirname, 'yt-dlp.exe');
                     console.log(`[Stream] Intentando yt-dlp en: ${ytDlpPath}`);
                     const output = await youtubedl(`https://www.youtube.com/watch?v=${trackId}`, {
                         dumpSingleJson: true,
                         noCheckCertificates: true,
-                        format: 'bestaudio[ext=m4a]/bestaudio',
-                        executablePath: ytDlpPath
+                        jsRuntimes: `node:${process.execPath}`,
+                        remoteComponents: 'ejs:github',
+                        format: 'bestaudio[ext=m4a]/bestaudio/best[ext=mp4]/best'
                     });
                     
                     if (output && output.url) {

@@ -17,8 +17,6 @@ import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
-import java.net.URI
-import java.net.URISyntaxException
 import java.util.concurrent.TimeUnit
 import javax.inject.Singleton
 
@@ -26,95 +24,51 @@ import javax.inject.Singleton
 @InstallIn(SingletonComponent::class)
 object NetworkModule {
 
+    private const val TAG = "AuraDebug-HTTP"
+    private const val DEFAULT_PIPED_BASE_URL = "https://api.piped.private.coffee/"
+    private const val DEFAULT_LRCLIB_BASE_URL = "https://lrclib.net/"
+
+    // ── OkHttpClient ─────────────────────────────────────────────────────────
+
     @Provides
     @Singleton
     fun provideOkHttpClient(): OkHttpClient {
-        val builder = OkHttpClient.Builder()
+        val loggingInterceptor = HttpLoggingInterceptor { message ->
+            Log.d(TAG, message)
+        }.apply {
+            level = if (BuildConfig.DEBUG) {
+                HttpLoggingInterceptor.Level.HEADERS
+            } else {
+                HttpLoggingInterceptor.Level.NONE
+            }
+        }
+
+        return OkHttpClient.Builder()
             .addInterceptor(RequestIdInterceptor())
             .addInterceptor(NetworkErrorInterceptor())
+            .addInterceptor(loggingInterceptor)
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
-
-        // FIX: logging con BODY solo en DEBUG — evita leak de tokens/headers en release
-        if (BuildConfig.DEBUG) {
-            val loggingInterceptor = HttpLoggingInterceptor { message ->
-                Log.d("AuraDebug-HTTP", message)
-            }.apply {
-                level = HttpLoggingInterceptor.Level.BODY
-            }
-            builder.addInterceptor(loggingInterceptor)
-        }
-
-        return builder.build()
+            .build()
     }
+
+    // ── Piped / BFF API ──────────────────────────────────────────────────────
 
     @Provides
     @Singleton
     fun provideAuraBffApi(okHttpClient: OkHttpClient): AuraBffApi {
-        val safeBaseUrl = getSafeBffBaseUrl(BuildConfig.BFF_BASE_URL)
+        val baseUrl = safeBaseUrl(
+            candidate = BuildConfig.BFF_BASE_URL,
+            fallback = DEFAULT_PIPED_BASE_URL
+        )
 
         return Retrofit.Builder()
-            .baseUrl(safeBaseUrl)
+            .baseUrl(baseUrl)
             .client(okHttpClient)
             .addConverterFactory(GsonConverterFactory.create())
             .build()
             .create(AuraBffApi::class.java)
-    }
-
-    /**
-     * Validación de arranque del endpoint BFF sin crashear la aplicación.
-     * Si la configuración es insegura (ej. cleartext en release) o malformada,
-     * aplica un fallback seguro (host Piped primario) para evitar un crash fatal 
-     * en tiempo de ejecución de Hilt y permite al ProviderGateway de la app usar 
-     * su propio mecanismo de fallback.
-     */
-    private fun getSafeBffBaseUrl(configuredUrl: String): String {
-        var isSafe = true
-        var safeUrl = configuredUrl
-
-        if (configuredUrl.isBlank() || configuredUrl == "https://api.example.com/api/v1/") {
-            Log.e("AuraNetwork", "BFF_BASE_URL no está configurada o está vacía.")
-            isSafe = false
-        } else if (!configuredUrl.endsWith("/")) {
-            Log.e("AuraNetwork", "BFF_BASE_URL debe terminar con '/'")
-            isSafe = false
-        } else if (!configuredUrl.startsWith("http://") && !configuredUrl.startsWith("https://")) {
-            Log.e("AuraNetwork", "BFF_BASE_URL debe comenzar con 'https://' o 'http://'")
-            isSafe = false
-        } else if (configuredUrl.startsWith("http://") && !BuildConfig.ALLOW_LOCALHOST) {
-            Log.e("AuraNetwork", "Cleartext HTTP bloqueado en release. Forzando fallback seguro.")
-            isSafe = false
-        } else {
-            try {
-                val uri = URI(configuredUrl)
-                if (uri.host.isNullOrBlank()) {
-                    Log.e("AuraNetwork", "BFF_BASE_URL no tiene host válido.")
-                    isSafe = false
-                }
-            } catch (e: URISyntaxException) {
-                Log.e("AuraNetwork", "BFF_BASE_URL no es una URL válida.", e)
-                isSafe = false
-            }
-        }
-
-        if (!isSafe) {
-            safeUrl = "https://${PipedMirrorInterceptor.PRIMARY_HOST}/"
-            Log.w("AuraNetwork", "Usando fallback base URL seguro y válido: $safeUrl")
-        }
-
-        return safeUrl
-    }
-
-    @Provides
-    @Singleton
-    fun provideLrcLibApi(okHttpClient: OkHttpClient): LrcLibApi {
-        return Retrofit.Builder()
-            .baseUrl("https://lrclib.net/")
-            .client(okHttpClient)
-            .addConverterFactory(GsonConverterFactory.create())
-            .build()
-            .create(LrcLibApi::class.java)
     }
 
     /**
@@ -129,26 +83,56 @@ object NetworkModule {
             .addInterceptor(PipedMirrorInterceptor())
             .build()
 
-        // La base URL usa el mirror primario; el PipedMirrorInterceptor
-        // cambia el host automáticamente si este falla.
+        val baseUrl = safeBaseUrl(
+            candidate = BuildConfig.PIPED_BASE_URL,
+            fallback = "https://${PipedMirrorInterceptor.PRIMARY_HOST}/"
+        )
+
         return Retrofit.Builder()
-            .baseUrl("https://${PipedMirrorInterceptor.PRIMARY_HOST}/")
+            .baseUrl(baseUrl)
             .client(pipedClient)
             .addConverterFactory(GsonConverterFactory.create())
             .build()
             .create(PipedApi::class.java)
     }
 
+    // ── LrcLib API (Lyrics) ──────────────────────────────────────────────────
+
+    @Provides
+    @Singleton
+    fun provideLrcLibApi(okHttpClient: OkHttpClient): LrcLibApi {
+        val baseUrl = safeBaseUrl(
+            candidate = BuildConfig.LRCLIB_BASE_URL,
+            fallback = DEFAULT_LRCLIB_BASE_URL
+        )
+        val lyricsClient = okHttpClient.newBuilder()
+            .callTimeout(8, TimeUnit.SECONDS)
+            .connectTimeout(5, TimeUnit.SECONDS)
+            .readTimeout(8, TimeUnit.SECONDS)
+            .build()
+
+        return Retrofit.Builder()
+            .baseUrl(baseUrl)
+            .client(lyricsClient)
+            .addConverterFactory(GsonConverterFactory.create())
+            .build()
+            .create(LrcLibApi::class.java)
+    }
+
+    // ── Invidious API (Fallback) ─────────────────────────────────────────────
+
     @Provides
     @Singleton
     fun provideInvidiousApi(okHttpClient: OkHttpClient): InvidiousApi {
         return Retrofit.Builder()
-            .baseUrl("https://vid.priv.au/") // an invidious instance API
+            .baseUrl("https://invidious.projectsegfau.lt/")
             .client(okHttpClient)
             .addConverterFactory(GsonConverterFactory.create())
             .build()
             .create(InvidiousApi::class.java)
     }
+
+    // ── Spotify APIs ─────────────────────────────────────────────────────────
 
     @Provides
     @Singleton
@@ -177,5 +161,56 @@ object NetworkModule {
             .addConverterFactory(GsonConverterFactory.create())
             .build()
             .create(com.auramusic.app.data.remote.SpotifyApi::class.java)
+    }
+
+    // ── URL Validation ───────────────────────────────────────────────────────
+
+    /**
+     * Valida y normaliza una URL base para Retrofit.
+     *
+     * Reglas:
+     * - Rechaza URLs vacías o sin esquema http/https.
+     * - Normaliza slash final (Retrofit lo requiere).
+     * - En RELEASE: rechaza cualquier HTTP (cleartext).
+     * - En DEBUG: permite HTTP **solo** para 10.0.2.2, 127.0.0.1 y localhost.
+     * - Si la URL es inválida, usa el [fallback] HTTPS en vez de crashear.
+     */
+    private fun safeBaseUrl(candidate: String, fallback: String): String {
+        val trimmed = candidate.trim()
+
+        if (trimmed.isBlank()) {
+            Log.w(TAG, "Empty base URL. Using fallback: $fallback")
+            return fallback
+        }
+
+        val normalized = if (trimmed.endsWith("/")) trimmed else "$trimmed/"
+        val isHttps = normalized.startsWith("https://")
+        val isHttp = normalized.startsWith("http://")
+
+        if (!isHttps && !isHttp) {
+            Log.w(TAG, "Invalid base URL scheme: $trimmed. Using fallback: $fallback")
+            return fallback
+        }
+
+        // Release: rechazar HTTP siempre
+        if (!BuildConfig.DEBUG && isHttp) {
+            Log.w(TAG, "HTTP rejected in release. Using fallback: $fallback")
+            return fallback
+        }
+
+        // Debug: permitir HTTP solo para emulador/localhost
+        if (BuildConfig.DEBUG && isHttp) {
+            val isAllowedLocal =
+                normalized.startsWith("http://10.0.2.2") ||
+                    normalized.startsWith("http://127.0.0.1") ||
+                    normalized.startsWith("http://localhost")
+
+            if (!isAllowedLocal) {
+                Log.w(TAG, "Non-local HTTP rejected in debug. Using fallback: $fallback")
+                return fallback
+            }
+        }
+
+        return normalized
     }
 }

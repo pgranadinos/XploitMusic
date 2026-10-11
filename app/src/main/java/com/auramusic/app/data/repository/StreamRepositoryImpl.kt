@@ -2,30 +2,52 @@ package com.auramusic.app.data.repository
 
 import android.util.Log
 import com.auramusic.app.core.util.Resource
-import com.auramusic.app.data.remote.AuraBffApi
 import com.auramusic.app.domain.model.SearchResultItem
 import com.auramusic.app.domain.model.SearchResults
 import com.auramusic.app.domain.model.Song
+import com.auramusic.app.domain.model.LatamCharts
+import com.auramusic.app.domain.model.LatamCountry
+import com.auramusic.app.data.provider.youtubemusic.YouTubeMusicClient
+import com.auramusic.app.data.provider.util.executeWithRetry
 import com.auramusic.app.domain.provider.ProviderGateway
 import com.auramusic.app.domain.repository.StreamRepository
 import com.auramusic.app.core.analytics.AuraAnalyticsLogger
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import javax.inject.Inject
 import com.auramusic.app.data.remote.AuraHomeFeedResponse
-import com.auramusic.app.data.remote.AuraPlayEventRequest
-import java.util.Locale
+import java.util.Calendar
 import com.auramusic.app.core.util.RegionUtils
 
 class StreamRepositoryImpl @Inject constructor(
-    private val api: AuraBffApi,
     private val gateway: ProviderGateway,
-    private val analyticsLogger: AuraAnalyticsLogger
+    private val analyticsLogger: AuraAnalyticsLogger,
+    private val youtubeMusicClient: YouTubeMusicClient,
 ) : StreamRepository {
 
     companion object {
         private const val TAG = "XploitDebug"
+        private const val REGIONAL_MUSIC_CACHE_TTL_MS = 10 * 60 * 1000L
+        private const val MIN_REGIONAL_SONGS_BEFORE_FALLBACK = 6
+        private const val HOME_REGION = "PE"
     }
+
+    private data class RegionalMusicCache(
+        val region: String,
+        val songs: List<Song>,
+        val loadedAtMs: Long
+    )
+
+    private val regionalMusicMutex = Mutex()
+    @Volatile private var regionalMusicCache: RegionalMusicCache? = null
+    private val latamMutex = Mutex()
+    private var latamCache: Pair<Long, LatamCharts>? = null
 
     override suspend fun searchSongs(query: String): Resource<List<Song>> {
         val startTime = System.currentTimeMillis()
@@ -61,6 +83,8 @@ class StreamRepositoryImpl @Inject constructor(
                     Resource.Error("El servidor de búsqueda no responde. Verifica tu conexión e intenta de nuevo.")
                 }
             )
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             analyticsLogger.logSearch(query, false, System.currentTimeMillis() - startTime, 0, true, e.localizedMessage)
             Log.e(TAG, "StreamRepository: Mixed search error: ${e.localizedMessage}", e)
@@ -86,65 +110,75 @@ class StreamRepositoryImpl @Inject constructor(
     
     override suspend fun getHomeFeed(): Resource<AuraHomeFeedResponse> {
         return try {
-            Log.d(TAG, "StreamRepository: Getting HomeFeed via BFF")
-            val response = api.getHomeFeed()
-            Resource.Success(response)
-        } catch (e: Exception) {
-            // Si el BFF falla, construir el feed desde Piped directamente
-            Log.w(TAG, "StreamRepository: BFF HomeFeed falló (${e.localizedMessage}), usando fallback Piped")
-            try {
-                val initialRegion = RegionUtils.normalizeRegion(Locale.getDefault().country)
-                var trendingResult = gateway.getTrending(initialRegion)
-                var activeRegion = initialRegion
-
-                // Cascading Fallback
-                if (trendingResult.isFailure) {
-                    val fallbacks = RegionUtils.getFallbackRegions(initialRegion)
-                    for (fallbackRegion in fallbacks) {
-                        Log.w(TAG, "StreamRepository: getTrending failed for $activeRegion, trying fallback: $fallbackRegion")
-                        trendingResult = gateway.getTrending(fallbackRegion)
-                        if (trendingResult.isSuccess) {
-                            activeRegion = fallbackRegion
-                            break
-                        }
-                        activeRegion = fallbackRegion
-                    }
-                }
-
-                if (trendingResult.isFailure) {
-                    throw Exception("Todas las regiones de contingencia fallaron para Trending.")
-                }
-                
-                val rockResult = gateway.search("rock hits")
-                val popResult = gateway.search("pop hits")
-
-                val toAuraTrack: (Song) -> com.auramusic.app.data.remote.AuraTrack = { s ->
-                    com.auramusic.app.data.remote.AuraTrack(
-                        id = s.id,
-                        title = s.title,
-                        artist = s.artist,
-                        durationSeconds = s.durationSeconds.toInt(),
-                        thumbnailUrl = s.thumbnailUrl
-                    )
-                }
-
-                val trending = trendingResult.getOrNull()?.take(15)?.map(toAuraTrack) ?: emptyList()
-                val rock = rockResult.getOrNull()?.take(10)?.map(toAuraTrack) ?: emptyList()
-                val pop = popResult.getOrNull()?.take(10)?.map(toAuraTrack) ?: emptyList()
-
-                val fallbackFeed = AuraHomeFeedResponse(
-                    carousels = listOf(
-                        com.auramusic.app.data.remote.AuraCarousel("${RegionUtils.getRegionFlag(activeRegion)} Tendencias", "trending", trending),
-                        com.auramusic.app.data.remote.AuraCarousel("🎸 Rock", "genre", rock),
-                        com.auramusic.app.data.remote.AuraCarousel("🎤 Pop", "genre", pop)
-                    )
-                )
-                Log.d(TAG, "StreamRepository: HomeFeed fallback exitoso con Piped")
-                Resource.Success(fallbackFeed)
-            } catch (fallbackEx: Exception) {
-                Log.e(TAG, "StreamRepository: HomeFeed fallback también falló", fallbackEx)
-                Resource.Error("No se pudo cargar el inicio")
+            Log.d(TAG, "StreamRepository: Building HomeFeed locally for $HOME_REGION")
+            val year = Calendar.getInstance().get(Calendar.YEAR)
+            val (regionalResult, genreResults) = coroutineScope {
+                val regional = async { getTrending(HOME_REGION) }
+                val rock = async { searchHomeSection("rock hits Perú $year official video") }
+                val pop = async { searchHomeSection("pop latino Perú $year official video") }
+                regional.await() to listOf(rock.await(), pop.await())
             }
+
+            val regional = if (regionalResult is Resource.Success) {
+                regionalResult.data.orEmpty().take(15)
+            } else {
+                emptyList()
+            }
+            val rock = selectRegionalMusic(listOf(genreResults[0]), limit = 10)
+            val pop = selectRegionalMusic(listOf(genreResults[1]), limit = 10)
+
+            val toAuraTrack: (Song) -> com.auramusic.app.data.remote.AuraTrack = { song ->
+                com.auramusic.app.data.remote.AuraTrack(
+                    id = song.id,
+                    title = song.title,
+                    artist = song.artist,
+                    durationSeconds = song.durationSeconds.toInt(),
+                    thumbnailUrl = song.thumbnailUrl
+                )
+            }
+            val carousels = listOf(
+                com.auramusic.app.data.remote.AuraCarousel(
+                    "${RegionUtils.getRegionFlag(HOME_REGION)} Lo más escuchado",
+                    "trending",
+                    regional.map(toAuraTrack)
+                ),
+                com.auramusic.app.data.remote.AuraCarousel(
+                    "🎸 Rock",
+                    "genre",
+                    rock.map(toAuraTrack)
+                ),
+                com.auramusic.app.data.remote.AuraCarousel(
+                    "🎤 Pop latino",
+                    "genre",
+                    pop.map(toAuraTrack)
+                )
+            ).filter { it.items.isNotEmpty() }
+
+            if (carousels.isEmpty()) {
+                Resource.Error("No se pudo cargar el inicio")
+            } else {
+                Log.d(TAG, "StreamRepository: Local HomeFeed ready — ${carousels.size} sections")
+                Resource.Success(AuraHomeFeedResponse(carousels = carousels))
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "StreamRepository: Local HomeFeed failed", e)
+            Resource.Error("No se pudo cargar el inicio")
+        }
+    }
+
+    private suspend fun searchHomeSection(query: String): List<Song> {
+        return try {
+            gateway.search(query).getOrElse { error ->
+                Log.w(TAG, "StreamRepository: Home section '$query' failed: ${error.message}")
+                emptyList()
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "StreamRepository: Home section '$query' failed: ${e.message}")
+            emptyList()
         }
     }
 
@@ -162,51 +196,133 @@ class StreamRepositoryImpl @Inject constructor(
     // Para no romper la UI actual de una sola vez
     // =========================================================================
 
-    override suspend fun getTrending(): Resource<List<Song>> {
-        val startTime = System.currentTimeMillis()
-        val initialRegion = RegionUtils.normalizeRegion(Locale.getDefault().country)
-        var result = gateway.getTrending(initialRegion)
-        
-        if (result.isFailure) {
-            val fallbacks = RegionUtils.getFallbackRegions(initialRegion)
-            for (fallbackRegion in fallbacks) {
-                com.auramusic.app.utils.AppLogger.logSearch("trending_$initialRegion", false, System.currentTimeMillis() - startTime, "Fallback to $fallbackRegion")
-                result = gateway.getTrending(fallbackRegion)
-                if (result.isSuccess) break
+    override suspend fun getTrending(region: String?): Resource<List<Song>> {
+        val activeRegion = RegionUtils.normalizeRegion(region ?: "PE")
+        val now = System.currentTimeMillis()
+        regionalMusicCache
+            ?.takeIf { it.region == activeRegion && now - it.loadedAtMs < REGIONAL_MUSIC_CACHE_TTL_MS }
+            ?.let {
+                Log.d(TAG, "StreamRepository: Regional music cache hit for $activeRegion")
+                return Resource.Success(it.songs)
+            }
+
+        return regionalMusicMutex.withLock {
+            val refreshedAt = System.currentTimeMillis()
+            regionalMusicCache
+                ?.takeIf {
+                    it.region == activeRegion &&
+                        refreshedAt - it.loadedAtMs < REGIONAL_MUSIC_CACHE_TTL_MS
+                }
+                ?.let { return@withLock Resource.Success(it.songs) }
+
+            Log.d(TAG, "StreamRepository: Loading regional music for $activeRegion")
+            val year = Calendar.getInstance().get(Calendar.YEAR)
+            val queries = regionalMusicQueries(activeRegion, year)
+            val searchBatches = coroutineScope {
+                queries.map { query ->
+                    async {
+                        try {
+                            val result = gateway.search(query)
+                            val songs = result.getOrElse { error ->
+                                Log.w(TAG, "StreamRepository: Regional search '$query' failed: ${error.message}")
+                                emptyList()
+                            }
+                            Log.d(TAG, "StreamRepository: Regional search '$query': ${songs.size} songs")
+                            songs
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            Log.w(TAG, "StreamRepository: Regional search '$query' failed: ${e.message}")
+                            emptyList()
+                        }
+                    }
+                }.awaitAll()
+            }
+
+            var selected = selectRegionalMusic(searchBatches)
+
+            // Generic YouTube trends can contain news or live events, so they are only
+            // considered when the music-focused searches cannot fill the first grid.
+            if (selected.size < MIN_REGIONAL_SONGS_BEFORE_FALLBACK) {
+                val fallbackSongs = try {
+                    var result = gateway.getTrending(activeRegion)
+                    if (result.isFailure && activeRegion != "US") {
+                        result = gateway.getTrending("US")
+                    }
+                    result.getOrDefault(emptyList())
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "StreamRepository: Generic trending fallback failed: ${e.message}")
+                    emptyList()
+                }
+                selected = selectRegionalMusic(searchBatches + listOf(fallbackSongs))
+            }
+
+            Log.d(TAG, "StreamRepository: Regional music final — ${selected.size} tracks for $activeRegion")
+            if (selected.isEmpty()) {
+                Resource.Error("No se encontraron tendencias musicales para $activeRegion")
+            } else {
+                regionalMusicCache = RegionalMusicCache(
+                    region = activeRegion,
+                    songs = selected,
+                    loadedAtMs = System.currentTimeMillis()
+                )
+                Resource.Success(selected)
             }
         }
-        
-        val timeMs = System.currentTimeMillis() - startTime
-        return result.fold(
-            onSuccess = { 
-                com.auramusic.app.utils.AppLogger.logSearch("trending_final", true, timeMs, resultCount = it.size)
-                Resource.Success(it) 
-            },
-            onFailure = { 
-                com.auramusic.app.utils.AppLogger.logSearch("trending_final", false, timeMs, error = it.message)
-                Resource.Error(it.message ?: "Error cargando tendencias. Intenta de nuevo más tarde.") 
-            }
-        )
     }
 
     override suspend fun getDiscovery(): Resource<List<Song>> {
-       return try {
-            val response = api.getHomeFeed()
-            val discoveryCarousel = response.carousels.find { it.type == "discovery" }
-                // Si no hay 'discovery', usamos la data de Trending
-                ?: response.carousels.find { it.type == "trending" }
-                
-            val songs = discoveryCarousel?.items?.map { it.toSong() } ?: emptyList()
-            Resource.Success(songs)
-        } catch (e: Exception) {
-            Resource.Error(e.localizedMessage ?: "Error cargando descubrimiento")
+        return when (val homeFeed = getHomeFeed()) {
+            is Resource.Success -> {
+                val feed = homeFeed.data ?: return Resource.Error("No se pudo cargar descubrimiento")
+                val carousel = feed.carousels.find { it.type == "discovery" }
+                    ?: feed.carousels.find { it.type == "trending" }
+                val songs = carousel?.items?.map { it.toSong() }.orEmpty()
+                if (songs.isEmpty()) Resource.Error("No se encontraron canciones para descubrimiento")
+                else Resource.Success(songs)
+            }
+            is Resource.Error -> Resource.Error(homeFeed.message ?: "Error cargando descubrimiento")
+            is Resource.Loading -> Resource.Error("No se pudo cargar descubrimiento")
         }
+    }
+
+    override suspend fun getLatamCharts(forceRefresh: Boolean): Resource<LatamCharts> = latamMutex.withLock {
+        latamCache?.takeIf { (loadedAt, selection) ->
+            val ttl = if (selection.unavailableCountries.isEmpty()) 30 * 60_000L else 2 * 60_000L
+            !forceRefresh && System.currentTimeMillis() - loadedAt < ttl
+        }?.let { return@withLock Resource.Success(it.second) }
+
+        val permits = Semaphore(3)
+        val results = coroutineScope {
+            LatamCountry.values().map { country ->
+                async {
+                    permits.withPermit {
+                        country to executeWithRetry("YOUTUBE_MUSIC", timeoutMs = 20_000L, maxRetries = 0) {
+                            youtubeMusicClient.getCountryChart(country)
+                        }
+                    }
+                }
+            }.awaitAll()
+        }
+        val charts = results.mapNotNull { it.second.getOrNull() }.filter { it.entries.isNotEmpty() }
+        if (charts.isEmpty()) return@withLock Resource.Error("No se pudieron cargar los rankings de Latinoamérica. Intenta de nuevo.")
+        val selection = LatamCharts(
+            charts = charts,
+            entries = mergeLatamCharts(charts),
+            unavailableCountries = LatamCountry.values().filter { country -> charts.none { it.country == country } },
+        )
+        latamCache = System.currentTimeMillis() to selection
+        Resource.Success(selection)
     }
 
     override suspend fun getGenreSongs(genre: String): Resource<List<Song>> {
         return try {
             // Realizamos una búsqueda dinámica para no repetir las canciones
             searchSongs("$genre hits")
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Resource.Error(e.localizedMessage ?: "Error cargando género")
         }
@@ -220,16 +336,6 @@ class StreamRepositoryImpl @Inject constructor(
         durationSeconds = durationSeconds.toLong()
     )
 
-    // Se han eliminado old tryNewPipeExtraction y tryPipedApi
-    // Ya que la lógica de extracción ahora le pertenece exclusivamente al servidor BFF
+    // La extracción y los fallbacks pertenecen al ProviderGateway.
 
-    override suspend fun recordTelemetryPlay(songId: String) {
-        try {
-            api.recordPlayEvent(AuraPlayEventRequest(trackId = songId, source = "android_app"))
-            Log.d(TAG, "Llamada a telemetría exitosa para $songId")
-        } catch (e: Exception) {
-            Log.e(TAG, "Telemetría falló: ${e.message}")
-            // Se ignora silenciosamente para no interrumpir al usuario
-        }
-    }
 }

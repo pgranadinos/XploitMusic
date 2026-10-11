@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
 import com.auramusic.app.data.local.entity.PlaylistEntity
 import kotlinx.coroutines.flow.stateIn
 import javax.inject.Inject
@@ -38,6 +39,7 @@ class LibraryViewModel @Inject constructor(
 
     private val _selectedPlaylist = MutableStateFlow<PlaylistWithSongs?>(null)
     val selectedPlaylist = _selectedPlaylist.asStateFlow()
+    private var selectionJob: Job? = null
 
     private val _showCreateDialog = MutableStateFlow(false)
     val showCreateDialog = _showCreateDialog.asStateFlow()
@@ -72,14 +74,15 @@ class LibraryViewModel @Inject constructor(
         viewModelScope.launch {
             playlistDao.deletePlaylist(playlistId)
             if (_selectedPlaylist.value?.playlist?.playlistId == playlistId) {
-                _selectedPlaylist.value = null
+                clearSelection()
             }
             Log.d(TAG, "LibraryVM: Deleted playlist $playlistId")
         }
     }
 
     fun selectPlaylist(playlistId: Long) {
-        viewModelScope.launch {
+        selectionJob?.cancel()
+        selectionJob = viewModelScope.launch {
             playlistDao.getPlaylistWithSongs(playlistId).collect { pws ->
                 _selectedPlaylist.value = pws
             }
@@ -87,7 +90,15 @@ class LibraryViewModel @Inject constructor(
     }
 
     fun clearSelection() {
+        selectionJob?.cancel()
+        selectionJob = null
         _selectedPlaylist.value = null
+    }
+
+    suspend fun renamePlaylist(playlistId: Long, name: String): Boolean {
+        val trimmedName = name.trim()
+        if (trimmedName.isEmpty()) return false
+        return playlistDao.renamePlaylist(playlistId, trimmedName) == 1
     }
 
     fun addSongToPlaylist(playlistId: Long, song: Song) {

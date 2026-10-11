@@ -23,8 +23,17 @@ interface PlaylistDao {
     @Query("DELETE FROM playlists WHERE playlistId = :playlistId")
     suspend fun deletePlaylist(playlistId: Long)
 
+    @Query("UPDATE playlists SET name = :name WHERE playlistId = :playlistId")
+    suspend fun renamePlaylist(playlistId: Long, name: String): Int
+
     @Query("SELECT * FROM playlists ORDER BY createdAt DESC")
     fun getAllPlaylists(): Flow<List<PlaylistEntity>>
+
+    @Query("SELECT playlistId FROM playlists WHERE source = :source AND sourceId = :sourceId LIMIT 1")
+    suspend fun findPlaylistIdBySource(source: String, sourceId: String): Long?
+
+    @Query("UPDATE playlists SET name = :name, coverUrl = :coverUrl WHERE playlistId = :playlistId")
+    suspend fun updatePlaylistMetadata(playlistId: Long, name: String, coverUrl: String?)
 
     // --- Song ↔ Playlist ---
 
@@ -33,6 +42,9 @@ interface PlaylistDao {
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertPlaylistSongCrossRef(crossRef: PlaylistSongCrossRef)
+
+    @Query("DELETE FROM playlist_song_cross_ref WHERE playlistId = :playlistId")
+    suspend fun clearPlaylistSongs(playlistId: Long)
 
     @Transaction
     suspend fun addSongToPlaylist(crossRef: PlaylistSongCrossRef) {

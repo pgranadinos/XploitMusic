@@ -1,14 +1,23 @@
 package com.auramusic.app.presentation.components
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -25,24 +34,24 @@ fun AuraAlbumCard(
     subtitle: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    isCircular: Boolean = false // True for Artists
+    isCircular: Boolean = false
 ) {
     Column(
         modifier = modifier
-            .width(140.dp)
+            .width(160.dp)
+            .clip(MaterialTheme.shapes.medium)
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.18f))
             .clickable(onClick = onClick)
             .padding(8.dp),
         horizontalAlignment = if (isCircular) Alignment.CenterHorizontally else Alignment.Start
     ) {
-        val shape = if (isCircular) RoundedCornerShape(50) else RoundedCornerShape(8.dp)
-        
-        AsyncImage(
-            model = imageUrl,
-            contentDescription = title,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier
-                .size(124.dp)
-                .clip(shape)
+        val shape = if (isCircular) CircleShape else MaterialTheme.shapes.medium
+
+        AuraArtwork(
+            imageUrl = imageUrl,
+            title = title,
+            shape = shape,
+            modifier = Modifier.size(144.dp)
         )
         
         Spacer(modifier = Modifier.height(12.dp))
@@ -50,8 +59,8 @@ fun AuraAlbumCard(
         Text(
             text = title,
             style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onBackground,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
@@ -65,5 +74,86 @@ fun AuraAlbumCard(
             maxLines = 2,
             overflow = TextOverflow.Ellipsis
         )
+    }
+}
+
+/** Compact horizontal card used by the two-column quick-pick grid. */
+@Composable
+fun AuraQuickPickCard(
+    imageUrl: String,
+    title: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val shape = MaterialTheme.shapes.small
+    Surface(
+        modifier = modifier
+            .clip(shape)
+            .clickable(onClick = onClick),
+        shape = shape,
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.82f),
+        tonalElevation = 1.dp,
+        border = BorderStroke(
+            width = 1.dp,
+            color = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f)
+        )
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            AuraArtwork(
+                imageUrl = imageUrl,
+                title = title,
+                shape = RoundedCornerShape(topStart = 10.dp, bottomStart = 10.dp),
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .aspectRatio(1f)
+            )
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.padding(horizontal = 10.dp),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+@Composable
+private fun AuraArtwork(
+    imageUrl: String,
+    title: String,
+    shape: Shape,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .clip(shape)
+            .background(
+                Brush.linearGradient(
+                    listOf(
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.85f),
+                        MaterialTheme.colorScheme.surfaceVariant
+                    )
+                )
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        if (imageUrl.isBlank()) {
+            Icon(
+                imageVector = Icons.Default.MusicNote,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.9f),
+                modifier = Modifier.size(40.dp)
+            )
+        } else {
+            AsyncImage(
+                model = imageUrl,
+                contentDescription = title,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
     }
 }

@@ -1,12 +1,13 @@
 package com.auramusic.app.domain.usecase
 
 import app.cash.turbine.test
-import com.auramusic.app.data.local.dao.PlaylistDao
-import com.auramusic.app.data.local.dao.SongDao
+import com.auramusic.app.data.remote.SpotifyAlbumDto
 import com.auramusic.app.data.remote.SpotifyArtistDto
 import com.auramusic.app.data.remote.SpotifyPlaylistDto
 import com.auramusic.app.data.remote.SpotifyTrackDto
+import com.auramusic.app.data.remote.SpotifyTracksSummaryDto
 import com.auramusic.app.data.repository.SpotifyMatchingEngine
+import com.auramusic.app.data.repository.SpotifyPlaylistPersister
 import com.auramusic.app.domain.model.Song
 import com.auramusic.app.domain.provider.ProviderGateway
 import com.auramusic.app.domain.repository.SpotifyRepository
@@ -25,8 +26,7 @@ class ImportPlaylistUseCaseTest {
     private lateinit var spotifyRepository: SpotifyRepository
     private lateinit var providerGateway: ProviderGateway
     private lateinit var matchingEngine: SpotifyMatchingEngine
-    private lateinit var playlistDao: PlaylistDao
-    private lateinit var songDao: SongDao
+    private lateinit var persister: SpotifyPlaylistPersister
 
     private lateinit var importPlaylistUseCase: ImportPlaylistUseCase
 
@@ -35,15 +35,13 @@ class ImportPlaylistUseCaseTest {
         spotifyRepository = mockk()
         providerGateway = mockk()
         matchingEngine = SpotifyMatchingEngine() // Usaremos el real para evaluar los scores reales
-        playlistDao = mockk(relaxed = true)
-        songDao = mockk(relaxed = true)
+        persister = mockk(relaxed = true)
 
         importPlaylistUseCase = ImportPlaylistUseCase(
             spotifyRepository = spotifyRepository,
             gateway = providerGateway,
             matchingEngine = matchingEngine,
-            playlistDao = playlistDao,
-            songDao = songDao
+            persister = persister
         )
     }
 
@@ -53,8 +51,9 @@ class ImportPlaylistUseCaseTest {
         val playlistDto = SpotifyPlaylistDto(
             id = "pl_1",
             name = "Test Mix",
+            description = null,
             images = null,
-            tracks = com.auramusic.app.data.remote.SpotifyTracksDto(total = 2)
+            tracks = SpotifyTracksSummaryDto(total = 2)
         )
         
         val track1 = SpotifyTrackDto(
@@ -62,14 +61,14 @@ class ImportPlaylistUseCaseTest {
             name = "Blinding Lights",
             durationMs = 200_000,
             artists = listOf(SpotifyArtistDto("1", "The Weeknd")),
-            album = null
+            album = SpotifyAlbumDto(name = "After Hours", images = null)
         )
         val track2 = SpotifyTrackDto(
             id = "t_2",
             name = "Cancion Inexistente",
             durationMs = 150_000,
             artists = listOf(SpotifyArtistDto("2", "Ghost Artist")),
-            album = null
+            album = SpotifyAlbumDto(name = "Unknown", images = null)
         )
 
         coEvery { spotifyRepository.getAllPlaylistTracks(playlistDto.id) } returns Result.success(listOf(track1, track2))
@@ -83,7 +82,7 @@ class ImportPlaylistUseCaseTest {
         coEvery { providerGateway.search(match { it.contains("Cancion Inexistente") }) } returns Result.success(emptyList())
 
         // 3. Mock Database Persistence ID
-        coEvery { playlistDao.createPlaylist(any()) } returns 99L
+        coEvery { persister.persist(any(), any()) } returns 99L
 
         // 4. Assert with Turbine Test (Flow)
         importPlaylistUseCase.execute(playlistDto).test {
@@ -113,25 +112,100 @@ class ImportPlaylistUseCaseTest {
         }
 
         // 5. Verify Persistence was requested for the ONLY matched track
-        coVerify(exactly = 1) { playlistDao.createPlaylist(any()) }
-        coVerify(exactly = 1) { songDao.upsertNetworkSong(any()) } // Track 1 saved
-        coVerify(exactly = 1) { playlistDao.insertPlaylistSongCrossRef(any()) } // Track 1 mapped
+        coVerify(exactly = 1) {
+            persister.persist(playlistDto, match { songs -> songs.map { it.id } == listOf("yt_1") })
+        }
     }
 
     @Test
     fun `execute exits gracefully on Spotify API failure`() = runTest {
-        val playlistDto = SpotifyPlaylistDto(id = "pl_error", name = "Error Mix", tracks = com.auramusic.app.data.remote.SpotifyTracksDto(1))
+        val playlistDto = SpotifyPlaylistDto(
+            id = "pl_error",
+            name = "Error Mix",
+            description = null,
+            images = null,
+            tracks = SpotifyTracksSummaryDto(total = 1)
+        )
 
         coEvery { spotifyRepository.getAllPlaylistTracks(any()) } returns Result.failure(Exception("Network error"))
 
         importPlaylistUseCase.execute(playlistDto).test {
             val shutdownProgress = awaitItem()
-            assertThat(shutdownProgress.isComplete).isTrue()
+            assertThat(shutdownProgress.isComplete).isFalse()
             assertThat(shutdownProgress.processedTracks).isEqualTo(0)
+            assertThat(shutdownProgress.errorMessage).contains("Network error")
             awaitComplete()
         }
 
         // Must not touch Room
-        coVerify(exactly = 0) { playlistDao.createPlaylist(any()) }
+        coVerify(exactly = 0) { persister.persist(any(), any()) }
+    }
+
+    @Test
+    fun `execute reports provider failure instead of treating it as no match`() = runTest {
+        val playlist = SpotifyPlaylistDto(
+            id = "pl_provider_error",
+            name = "Provider Error",
+            description = null,
+            images = null,
+            tracks = SpotifyTracksSummaryDto(total = 1)
+        )
+        val track = SpotifyTrackDto(
+            id = "t_error",
+            name = "Unavailable Song",
+            durationMs = 180_000,
+            artists = listOf(SpotifyArtistDto("1", "Artist")),
+            album = SpotifyAlbumDto("Album", null)
+        )
+        coEvery { spotifyRepository.getAllPlaylistTracks(playlist.id) } returns
+            Result.success(listOf(track))
+        coEvery { providerGateway.search(any()) } returns Result.failure(Exception("Provider offline"))
+
+        importPlaylistUseCase.execute(playlist).test {
+            val trackProgress = awaitItem()
+            assertThat(trackProgress.latestStatus).isInstanceOf(TrackImportStatus.Failed::class.java)
+            assertThat(trackProgress.failedTracks).isEqualTo(1)
+
+            val terminalProgress = awaitItem()
+            assertThat(terminalProgress.errorMessage).contains("Revisa la conexión")
+            assertThat(terminalProgress.isComplete).isFalse()
+            awaitComplete()
+        }
+
+        coVerify(exactly = 0) { persister.persist(any(), any()) }
+    }
+
+    @Test
+    fun `execute does not persist low confidence candidate as a song`() = runTest {
+        val playlist = SpotifyPlaylistDto(
+            id = "pl_low",
+            name = "Low Confidence",
+            description = null,
+            images = null,
+            tracks = SpotifyTracksSummaryDto(total = 1)
+        )
+        val track = SpotifyTrackDto(
+            id = "t_low",
+            name = "Blinding Lights",
+            durationMs = 200_000,
+            artists = listOf(SpotifyArtistDto("1", "The Weeknd")),
+            album = SpotifyAlbumDto("After Hours", null)
+        )
+        val weakCandidate = Song("yt_weak", "Blinding Night", "Random Channel", "", 200, "")
+        coEvery { spotifyRepository.getAllPlaylistTracks(playlist.id) } returns
+            Result.success(listOf(track))
+        coEvery { providerGateway.search(any()) } returns Result.success(listOf(weakCandidate))
+        coEvery { persister.persist(any(), any()) } returns 77L
+
+        importPlaylistUseCase.execute(playlist).test {
+            val trackProgress = awaitItem()
+            assertThat(trackProgress.latestStatus).isInstanceOf(TrackImportStatus.LowConfidence::class.java)
+            assertThat(trackProgress.skippedTracks).isEqualTo(1)
+            val complete = awaitItem()
+            assertThat(complete.isComplete).isTrue()
+            awaitComplete()
+        }
+
+        coVerify(exactly = 1) { persister.persist(playlist, emptyList()) }
     }
 }

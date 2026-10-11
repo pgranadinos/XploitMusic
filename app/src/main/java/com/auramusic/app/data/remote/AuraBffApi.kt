@@ -1,8 +1,6 @@
 package com.auramusic.app.data.remote
 
 import retrofit2.http.GET
-import retrofit2.http.POST
-import retrofit2.http.Body
 import retrofit2.http.Path
 import retrofit2.http.Query
 
@@ -33,10 +31,6 @@ interface AuraBffApi {
         @Query("limit") limit: Int = 15
     ): AuraRelatedResponse
 
-    @POST("analytics/play")
-    suspend fun recordPlayEvent(
-        @Body request: AuraPlayEventRequest
-    )
 }
 
 // Data classes for the new BFF Contracts
@@ -78,11 +72,6 @@ data class AuraStreamResponse(
     val format: String? = null,
     val expireAt: Long = 0L,
     val bitrate: Int? = null  // kbps, opcional en v1 del BFF
-)
-
-data class AuraPlayEventRequest(
-    val trackId: String,
-    val source: String = "android_app"
 )
 
 /**

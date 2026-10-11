@@ -42,7 +42,9 @@ class InvidiousProvider @Inject constructor(
     }
 
     override suspend fun getStream(videoId: String): Result<String> {
-        return executeWithRetry(providerId, maxRetries = 2) {
+        // ProviderGateway supplies the next fallback, so bound each attempt
+        // instead of retrying a slow instance several times.
+        return executeWithRetry(providerId, timeoutMs = 6_000L, maxRetries = 0) {
             val response = api.getVideoDetails(videoId)
             val audioFormat = response.adaptiveFormats.find { it.type.startsWith("audio") }
             audioFormat?.url ?: throw ProviderError.NotFound(providerId)
@@ -53,7 +55,7 @@ class InvidiousProvider @Inject constructor(
         return executeWithRetry(providerId) {
             val details = api.getVideoDetails(videoId)
             val response = api.search("${details.title} mix", type = "video")
-            response.map {
+            val songs = response.map {
                 Song(
                     id = it.videoId,
                     title = it.title,
@@ -62,6 +64,8 @@ class InvidiousProvider @Inject constructor(
                     durationSeconds = it.lengthSeconds
                 )
             }
+            if (songs.isEmpty()) throw ProviderError.NotFound(providerId)
+            songs
         }
     }
 

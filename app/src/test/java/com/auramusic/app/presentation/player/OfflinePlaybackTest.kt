@@ -49,7 +49,17 @@ class OfflinePlaybackTest {
         assertEquals(true, conditionSatisfied)
         
         // El Playback State mutará a Playing sin Buffer de red
-        val currentState = PlaybackState.Playing(Song(targetId, "Test", "", 0, "", ""), 0L)
+        val currentState = PlaybackState.Playing(
+            Song(
+                id = targetId,
+                title = "Test",
+                artist = "",
+                thumbnailUrl = "",
+                durationSeconds = 0L,
+                streamUrl = ""
+            ),
+            0L
+        )
         assertNotNull(currentState)
     }
 }

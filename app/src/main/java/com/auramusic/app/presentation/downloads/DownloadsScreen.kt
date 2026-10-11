@@ -1,21 +1,26 @@
 package com.auramusic.app.presentation.downloads
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.DownloadDone
+import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -23,10 +28,12 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
 import com.auramusic.app.data.local.entity.DownloadedTrackEntity
+import com.auramusic.app.domain.model.Song
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DownloadsScreen(
+    onSongClick: (Song, List<Song>) -> Unit = { _, _ -> },
     viewModel: DownloadsViewModel = hiltViewModel()
 ) {
     val completedDownloads by viewModel.completedDownloads.collectAsState()
@@ -36,13 +43,39 @@ fun DownloadsScreen(
     val maxStorage by viewModel.maxStorageBytes.collectAsState()
     val wifiOnly by viewModel.wifiOnly.collectAsState()
 
-    var selectedTab by remember { mutableIntStateOf(0) }
+    var selectedTab by rememberSaveable { mutableIntStateOf(0) }
+    var trackPendingDeletion by remember { mutableStateOf<DownloadedTrackEntity?>(null) }
     val tabs = listOf("Biblioteca", "En proceso", "Ajustes")
+    val offlineSongs = completedDownloads.map { track ->
+        Song(
+            id = track.songId,
+            title = track.title,
+            artist = track.artist,
+            thumbnailUrl = track.thumbnailUrl,
+            durationSeconds = track.durationSeconds,
+            streamUrl = track.filePath.orEmpty()
+        )
+    }
+    val backgroundBrush = Brush.verticalGradient(
+        colors = listOf(
+            MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+            MaterialTheme.colorScheme.background
+        )
+    )
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Descargas", fontWeight = FontWeight.ExtraBold) },
+                title = {
+                    Column {
+                        Text("Descargas", fontWeight = FontWeight.ExtraBold)
+                        Text(
+                            "Tu música disponible sin conexión",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.background.copy(alpha = 0.95f),
                     titleContentColor = MaterialTheme.colorScheme.onBackground
@@ -50,7 +83,12 @@ fun DownloadsScreen(
             )
         }
     ) { padding ->
-        Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .background(backgroundBrush)
+        ) {
 
             // Storage bar across all tabs
             StorageIndicatorBar(
@@ -60,12 +98,31 @@ fun DownloadsScreen(
             )
 
             // Tab row
-            TabRow(selectedTabIndex = selectedTab) {
+            TabRow(
+                selectedTabIndex = selectedTab,
+                containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
+                contentColor = MaterialTheme.colorScheme.primary
+            ) {
                 tabs.forEachIndexed { idx, label ->
                     Tab(
                         selected = selectedTab == idx,
                         onClick = { selectedTab = idx },
-                        text = { Text(label) }
+                        text = { Text(label, fontWeight = FontWeight.SemiBold) },
+                        icon = {
+                            val count = when (idx) {
+                                0 -> completedDownloads.size
+                                1 -> activeDownloads.size
+                                else -> 0
+                            }
+                            if (idx != 2) {
+                                Badge(containerColor = MaterialTheme.colorScheme.primaryContainer,
+                                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer) {
+                                    Text(count.toString())
+                                }
+                            }
+                        },
+                        selectedContentColor = MaterialTheme.colorScheme.primary,
+                        unselectedContentColor = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
@@ -74,7 +131,12 @@ fun DownloadsScreen(
                 0 -> LibraryTab(
                     completed = completedDownloads,
                     failed = failedDownloads,
-                    onDelete = viewModel::deleteDownload,
+                    onPlay = { track ->
+                        offlineSongs.firstOrNull { it.id == track.songId }?.let { song ->
+                            onSongClick(song, offlineSongs)
+                        }
+                    },
+                    onDelete = { trackPendingDeletion = it },
                     onRetry = viewModel::retryFailed,
                     formatBytes = viewModel::formatBytes
                 )
@@ -93,6 +155,17 @@ fun DownloadsScreen(
             }
         }
     }
+
+    trackPendingDeletion?.let { track ->
+        DeleteDownloadDialog(
+            trackTitle = track.title,
+            onDismiss = { trackPendingDeletion = null },
+            onConfirm = {
+                viewModel.deleteDownload(track.songId)
+                trackPendingDeletion = null
+            }
+        )
+    }
 }
 
 // ── Storage Bar ──────────────────────────────────────────────────────────────
@@ -105,23 +178,46 @@ private fun StorageIndicatorBar(usedBytes: Long, maxBytes: Long, formatBytes: (L
         fraction > 0.7f -> MaterialTheme.colorScheme.tertiary
         else -> MaterialTheme.colorScheme.primary
     }
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.8f)
     ) {
-        Icon(Icons.Default.Storage, contentDescription = null, tint = color, modifier = Modifier.size(16.dp))
-        Spacer(Modifier.width(8.dp))
-        LinearProgressIndicator(
-            progress = { fraction },
-            modifier = Modifier.weight(1f).height(6.dp).clip(RoundedCornerShape(3.dp)),
-            color = color
-        )
-        Spacer(Modifier.width(8.dp))
-        Text(
-            "${formatBytes(usedBytes)} / ${formatBytes(maxBytes)}",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Default.Storage,
+                    contentDescription = null,
+                    tint = color,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    "Almacenamiento offline",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    "${formatBytes(usedBytes)} / ${formatBytes(maxBytes)}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Spacer(Modifier.height(10.dp))
+            LinearProgressIndicator(
+                progress = { fraction },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(6.dp)
+                    .clip(MaterialTheme.shapes.extraSmall),
+                color = color,
+                trackColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
+            )
+        }
     }
 }
 
@@ -131,7 +227,8 @@ private fun StorageIndicatorBar(usedBytes: Long, maxBytes: Long, formatBytes: (L
 private fun LibraryTab(
     completed: List<DownloadedTrackEntity>,
     failed: List<DownloadedTrackEntity>,
-    onDelete: (String) -> Unit,
+    onPlay: (DownloadedTrackEntity) -> Unit,
+    onDelete: (DownloadedTrackEntity) -> Unit,
     onRetry: (String) -> Unit,
     formatBytes: (Long) -> String
 ) {
@@ -141,11 +238,10 @@ private fun LibraryTab(
     ) {
         if (failed.isNotEmpty()) {
             item {
-                Text(
-                    "❌ Error en descarga",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                DownloadSectionHeader(
+                    icon = Icons.Default.ErrorOutline,
+                    title = "Descargas con errores",
+                    tint = MaterialTheme.colorScheme.error
                 )
             }
             items(failed, key = { it.songId }) { track ->
@@ -157,7 +253,7 @@ private fun LibraryTab(
                             IconButton(onClick = { onRetry(track.songId) }) {
                                 Icon(Icons.Default.Refresh, "Reintentar", tint = MaterialTheme.colorScheme.primary)
                             }
-                            IconButton(onClick = { onDelete(track.songId) }) {
+                            IconButton(onClick = { onDelete(track) }) {
                                 Icon(Icons.Default.Delete, "Eliminar", tint = MaterialTheme.colorScheme.error)
                             }
                         }
@@ -170,28 +266,28 @@ private fun LibraryTab(
         if (completed.isEmpty()) {
             item {
                 Box(Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(Icons.Default.Download, null, Modifier.size(64.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f))
-                        Spacer(Modifier.height(16.dp))
-                        Text("No tienes canciones descargadas", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
+                    DownloadEmptyState(
+                        icon = Icons.Default.Download,
+                        title = "Sin canciones descargadas",
+                        subtitle = "Guarda una canción desde el reproductor para escucharla sin conexión"
+                    )
                 }
             }
         } else {
             item {
-                Text(
-                    "✅ ${completed.size} canción${if (completed.size != 1) "es" else ""} disponibles sin internet",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                DownloadSectionHeader(
+                    icon = Icons.Default.DownloadDone,
+                    title = "${completed.size} canción${if (completed.size != 1) "es" else ""} sin conexión",
+                    tint = MaterialTheme.colorScheme.primary
                 )
             }
             items(completed, key = { it.songId }) { track ->
                 DownloadTrackRow(
                     track = track,
-                    subtitle = formatBytes(track.fileSizeBytes) + " · ${track.format} · ${track.quality}",
+                    subtitle = "Disponible sin conexión · ${formatBytes(track.fileSizeBytes)} · ${track.format}",
+                    onClick = { onPlay(track) },
                     trailing = {
-                        IconButton(onClick = { onDelete(track.songId) }) {
+                        IconButton(onClick = { onDelete(track) }) {
                             Icon(Icons.Default.Delete, "Eliminar", tint = MaterialTheme.colorScheme.error)
                         }
                     }
@@ -210,24 +306,35 @@ private fun ActiveTab(
 ) {
     if (active.isEmpty()) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text("No hay descargas en proceso", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            DownloadEmptyState(
+                icon = Icons.Default.Download,
+                title = "Sin descargas en proceso",
+                subtitle = "Aquí verás el progreso de las canciones que guardes"
+            )
         }
         return
     }
     LazyColumn(contentPadding = PaddingValues(vertical = 8.dp)) {
         items(active, key = { it.songId }) { track ->
-            Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                shape = MaterialTheme.shapes.medium,
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.82f)
+            ) {
+            Column(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     AsyncImage(
                         model = track.thumbnailUrl,
                         contentDescription = null,
-                        modifier = Modifier.size(48.dp).clip(RoundedCornerShape(6.dp)),
+                        modifier = Modifier.size(48.dp).clip(MaterialTheme.shapes.small),
                         contentScale = ContentScale.Crop
                     )
                     Spacer(Modifier.width(12.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Text(track.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onBackground)
-                        Text(track.artist, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(track.artist, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     TextButton(onClick = { onCancel(track.songId) }) {
                         Text("Cancelar", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall)
@@ -235,17 +342,22 @@ private fun ActiveTab(
                 }
                 Spacer(Modifier.height(6.dp))
                 LinearProgressIndicator(
-                    progress = { track.progress / 100f },
-                    modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp))
+                    progress = { track.progress.coerceIn(0, 100) / 100f },
+                    modifier = Modifier.fillMaxWidth().height(6.dp).clip(MaterialTheme.shapes.extraSmall)
                 )
                 Text(
-                    "${track.progress}% · ${track.status}",
+                    when (track.status) {
+                        "QUEUED" -> "En espera de descarga"
+                        "DOWNLOADING" -> "Descargando · ${track.progress.coerceIn(0, 100)}%"
+                        "PAUSED" -> "En pausa · ${track.progress.coerceIn(0, 100)}%"
+                        else -> "Preparando descarga"
+                    },
                     style = MaterialTheme.typography.labelSmall,
                     modifier = Modifier.padding(top = 2.dp),
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+            }
         }
     }
 }
@@ -266,7 +378,10 @@ private fun SettingsTab(
 
     LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item {
-            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+            Card(
+                shape = MaterialTheme.shapes.large,
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.86f))
+            ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text("Límite de almacenamiento", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
                     Spacer(Modifier.height(8.dp))
@@ -289,15 +404,18 @@ private fun SettingsTab(
         }
 
         item {
-            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+            Card(
+                shape = MaterialTheme.shapes.large,
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.86f))
+            ) {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(16.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Column {
-                        Text("Solo por WiFi", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
-                        Text("Descargar solo con WiFi activo", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Column(Modifier.weight(1f).padding(end = 12.dp)) {
+                        Text("Solo por Wi‑Fi", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+                        Text("Descargar únicamente con una red Wi‑Fi", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Switch(checked = wifiOnly, onCheckedChange = onWifiOnlyChange)
                 }
@@ -312,16 +430,27 @@ private fun SettingsTab(
             ) {
                 Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(8.dp))
-                Text("Limpiar caché ahora")
+                Text("Optimizar almacenamiento")
             }
         }
 
         item {
             Card(
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f))
+                shape = MaterialTheme.shapes.large,
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                )
             ) {
                 Column(Modifier.padding(16.dp)) {
-                    Text("⚖️ Aviso de contenido", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Default.Info,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text("Uso responsable", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall)
+                    }
                     Spacer(Modifier.height(6.dp))
                     Text(
                         "Las descargas están disponibles solo para contenido cuya fuente permite uso offline. " +
@@ -338,8 +467,8 @@ private fun SettingsTab(
     if (showConfirmDialog) {
         AlertDialog(
             onDismissRequest = { showConfirmDialog = false },
-            title = { Text("¿Limpiar caché?") },
-            text = { Text("Se eliminarán las canciones menos usadas hasta alcanzar el límite configurado.") },
+            title = { Text("¿Optimizar almacenamiento?") },
+            text = { Text("Se eliminarán las descargas menos usadas solo si superas el límite configurado.") },
             confirmButton = {
                 TextButton(onClick = { onClearCache(); showConfirmDialog = false }) {
                     Text("Limpiar", color = MaterialTheme.colorScheme.error)
@@ -355,27 +484,137 @@ private fun SettingsTab(
 // ── Shared Row Composable ─────────────────────────────────────────────────────
 
 @Composable
+private fun DownloadSectionHeader(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    tint: androidx.compose.ui.graphics.Color
+) {
+    Row(
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = tint,
+            modifier = Modifier.size(20.dp)
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+    }
+}
+
+@Composable
+private fun DownloadEmptyState(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    subtitle: String
+) {
+    Column(
+        modifier = Modifier.padding(horizontal = 32.dp, vertical = 48.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Box(
+            modifier = Modifier
+                .size(72.dp)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(34.dp)
+            )
+        }
+        Spacer(Modifier.height(18.dp))
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onBackground
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text = subtitle,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+        )
+    }
+}
+
+@Composable
 private fun DownloadTrackRow(
     track: DownloadedTrackEntity,
     subtitle: String,
+    onClick: (() -> Unit)? = null,
     trailing: @Composable () -> Unit
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+            .clip(MaterialTheme.shapes.medium)
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.82f)
     ) {
-        AsyncImage(
-            model = track.thumbnailUrl,
-            contentDescription = null,
-            modifier = Modifier.size(52.dp).clip(RoundedCornerShape(8.dp)),
-            contentScale = ContentScale.Crop
-        )
-        Spacer(Modifier.width(12.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(track.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
-            Text(track.artist, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
-            Text(subtitle, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f), maxLines = 1)
+        Row(
+            modifier = Modifier.padding(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            AsyncImage(
+                model = track.thumbnailUrl,
+                contentDescription = "Carátula de ${track.title}",
+                modifier = Modifier.size(52.dp).clip(MaterialTheme.shapes.small),
+                contentScale = ContentScale.Crop
+            )
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(track.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
+                Text(track.artist, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                Text(subtitle, style = MaterialTheme.typography.labelSmall,
+                    color = if (track.status == "FAILED") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis)
+            }
+            trailing()
         }
-        trailing()
     }
+}
+
+@Composable
+private fun DeleteDownloadDialog(
+    trackTitle: String,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = {
+            Icon(
+                Icons.Default.Delete,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.error
+            )
+        },
+        title = { Text("Eliminar descarga") },
+        text = { Text("Se eliminará el archivo guardado de \"$trackTitle\".") },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text("Eliminar", color = MaterialTheme.colorScheme.error)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancelar")
+            }
+        }
+    )
 }

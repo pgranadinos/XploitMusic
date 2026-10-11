@@ -36,8 +36,22 @@ class PlayerViewModelPrefetchTest {
         // ExoPlayer un MediaItem que luego setMediaItem(primaria) sobreescribirá, causando un corte de buffering al final.
         // Ahora `playInternal` garantiza que `launchPrefetch` solo se llama si `prepare()` y `play()` son exitosos.
 
-        val dummySong1 = Song("1", "Song1", "Artist1", 100, "url", "streamUrl1")
-        val dummySong2 = Song("2", "Song2", "Artist2", 100, "url", "streamUrl2")
+        val dummySong1 = Song(
+            id = "1",
+            title = "Song1",
+            artist = "Artist1",
+            thumbnailUrl = "url",
+            durationSeconds = 100L,
+            streamUrl = "streamUrl1"
+        )
+        val dummySong2 = Song(
+            id = "2",
+            title = "Song2",
+            artist = "Artist2",
+            thumbnailUrl = "url",
+            durationSeconds = 100L,
+            streamUrl = "streamUrl2"
+        )
 
         // Esta validación estática es solo la base del contrato lógico. En vivo las dependencias
         // se manejan vía Hilt/ExoPlayer mock.

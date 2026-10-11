@@ -38,8 +38,13 @@ data class SpotifyPlaylistDto(
     @SerializedName("name")        val name: String,
     @SerializedName("description") val description: String?,
     @SerializedName("images")      val images: List<SpotifyImageDto>?,
-    @SerializedName("tracks")      val tracks: SpotifyTracksSummaryDto
-)
+    @SerializedName("items")       val itemsSummary: SpotifyTracksSummaryDto? = null,
+    @SerializedName("tracks")      val tracks: SpotifyTracksSummaryDto? = null
+) {
+    /** `items` reemplazó a `tracks`; se conserva el fallback durante la migración. */
+    val totalItems: Int
+        get() = itemsSummary?.total ?: tracks?.total ?: 0
+}
 
 data class SpotifyTracksSummaryDto(
     @SerializedName("total") val total: Int
@@ -53,11 +58,19 @@ data class SpotifyPagedTracksDto(
 )
 
 data class SpotifyPlaylistTrackDto(
-    @SerializedName("track") val track: SpotifyTrackDto?  // null if track was removed
-)
+    @SerializedName("item")     val item: SpotifyTrackDto? = null,
+    @SerializedName("is_local") val isLocal: Boolean = false,
+    @SerializedName("track")    val legacyTrack: SpotifyTrackDto? = null
+) {
+    /** `track` es el nombre anterior del campo y solo se usa como fallback. */
+    val resolvedItem: SpotifyTrackDto?
+        get() = item ?: legacyTrack
+}
 
 data class SpotifyTrackDto(
     @SerializedName("id")           val id: String?,
+    @SerializedName("type")         val type: String? = null,
+    @SerializedName("is_playable")  val isPlayable: Boolean? = null,
     @SerializedName("name")         val name: String,
     @SerializedName("duration_ms")  val durationMs: Long,
     @SerializedName("artists")      val artists: List<SpotifyArtistDto>,

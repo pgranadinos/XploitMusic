@@ -15,7 +15,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -34,7 +33,10 @@ fun QueueView(
 ) {
     if (upNext.isEmpty()) {
         Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text("Tu cola está vacía", color = Color.White.copy(alpha = 0.7f))
+            Text(
+                "Tu cola está vacía",
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
         return
     }
@@ -70,10 +72,15 @@ fun QueueView(
                                 .fillMaxSize()
                                 .padding(vertical = 4.dp)
                                 .clip(RoundedCornerShape(8.dp))
-                                .background(Color.Red.copy(alpha = 0.8f)),
+                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.88f)),
                             contentAlignment = Alignment.CenterEnd
                         ) {
-                            Icon(Icons.Default.Delete, contentDescription = "Delete", tint = Color.White, modifier = Modifier.padding(end = 16.dp))
+                            Icon(
+                                Icons.Default.Delete,
+                                contentDescription = "Eliminar de la cola",
+                                tint = MaterialTheme.colorScheme.onPrimary,
+                                modifier = Modifier.padding(end = 16.dp)
+                            )
                         }
                     },
                     content = {
@@ -84,7 +91,10 @@ fun QueueView(
                                 .padding(vertical = 4.dp)
                                 .detectReorderAfterLongPress(state)
                                 .shadow(elevation, RoundedCornerShape(8.dp))
-                                .background(Color.Black.copy(alpha = 0.35f), RoundedCornerShape(8.dp))
+                                .background(
+                                    MaterialTheme.colorScheme.surfaceVariant,
+                                    RoundedCornerShape(8.dp)
+                                )
                                 .clip(RoundedCornerShape(8.dp))
                                 .padding(8.dp)
                         ) {
@@ -102,19 +112,24 @@ fun QueueView(
                                     text = song.title,
                                     style = MaterialTheme.typography.bodyLarge,
                                     fontWeight = FontWeight.Bold,
-                                    color = Color.White.copy(alpha = alpha),
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = alpha),
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
                                 Text(
                                     text = song.artist,
                                     style = MaterialTheme.typography.bodyMedium,
-                                    color = Color.White.copy(alpha = alpha * 0.85f),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha),
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
                             }
-                            Icon(Icons.Default.DragHandle, contentDescription = "Reordenar", tint = Color.White.copy(alpha = 0.6f), modifier = Modifier.padding(12.dp))
+                            Icon(
+                                Icons.Default.DragHandle,
+                                contentDescription = "Reordenar",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(12.dp)
+                            )
                         }
                     }
                 )

@@ -1,6 +1,7 @@
 package com.auramusic.app.data.provider.util
 
 import com.auramusic.app.domain.provider.ProviderError
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
@@ -21,6 +22,11 @@ suspend fun <T> executeWithRetry(
             }
             return Result.success(result)
         } catch (e: Exception) {
+            // A caller cancellation must stop the provider chain immediately.
+            // TimeoutCancellationException is ours and is intentionally retried below.
+            if (e is CancellationException && e !is TimeoutCancellationException) {
+                throw e
+            }
             val mappedError = mapToProviderError(providerId, e)
             currentAttempt++
             

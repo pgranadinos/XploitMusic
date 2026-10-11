@@ -4,6 +4,8 @@ import com.auramusic.app.domain.model.Song
 import kotlinx.coroutines.flow.Flow
 
 interface PlayerRepository {
+    /** Emits the currently loaded Song reconstructed from MediaItem metadata, or null if nothing is loaded */
+    val currentSong: Flow<Song?>
     val isPlaying: Flow<Boolean>
     val currentPosition: Flow<Long>
     val duration: Flow<Long>
@@ -13,10 +15,12 @@ interface PlayerRepository {
     val mediaItemTransition: Flow<String?>
 
     suspend fun play()
+    suspend fun awaitPlaybackStarted(songId: String)
     suspend fun pause()
     suspend fun seekTo(position: Long)
     suspend fun prepare(url: String, song: Song)
     suspend fun addNextMediaItem(url: String, song: Song)
+    suspend fun clearUpcomingMediaItems()
     suspend fun clearQueue()
     suspend fun hasNextMediaItem(): Boolean
     suspend fun skipToNext()

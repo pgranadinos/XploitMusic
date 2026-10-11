@@ -59,6 +59,11 @@
 # ── Kotlin Coroutines ──
 -dontwarn kotlinx.coroutines.**
 
+# ── NewPipeExtractor JavaScript deciphering ──
+-keep class org.mozilla.javascript.** { *; }
+-keep class org.mozilla.classfile.ClassFileWriter
+-dontwarn org.mozilla.javascript.tools.**
+
 # ── General ──
 -keepattributes *Annotation*
 -keepattributes SourceFile,LineNumberTable

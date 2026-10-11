@@ -6,9 +6,10 @@ import androidx.hilt.work.HiltWorker
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
+import com.auramusic.app.core.util.Resource
 import com.auramusic.app.data.local.dao.DownloadDao
-import com.auramusic.app.data.remote.AuraBffApi
 import com.auramusic.app.data.repository.OfflineManager
+import com.auramusic.app.domain.repository.StreamRepository
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import okhttp3.OkHttpClient
@@ -33,7 +34,7 @@ class DownloadWorker @AssistedInject constructor(
     @Assisted params: WorkerParameters,
     private val downloadDao: DownloadDao,
     private val offlineManager: OfflineManager,
-    private val api: AuraBffApi,
+    private val streamRepository: StreamRepository,
     private val okHttpClient: OkHttpClient
 ) : CoroutineWorker(context, params) {
 
@@ -43,11 +44,35 @@ class DownloadWorker @AssistedInject constructor(
         const val KEY_QUALITY = "quality"
         const val KEY_PROGRESS = "progress"
         const val KEY_ERROR = "error"
+
+        internal fun extensionForAudio(contentType: String?, url: String): String {
+            val mimeType = contentType
+                ?.substringBefore(';')
+                ?.trim()
+                ?.lowercase()
+            return when (mimeType) {
+                "audio/mp4", "audio/x-m4a", "video/mp4" -> "m4a"
+                "audio/webm", "video/webm" -> "webm"
+                "audio/mpeg", "audio/mp3" -> "mp3"
+                "audio/ogg", "application/ogg" -> "ogg"
+                "audio/aac" -> "aac"
+                else -> url.substringBefore('?')
+                    .substringAfterLast('.', "")
+                    .lowercase()
+                    .takeIf { it in setOf("m4a", "webm", "mp3", "ogg", "aac") }
+                    ?: "m4a"
+            }
+        }
     }
+
+    private data class DownloadResult(
+        val checksum: String,
+        val extension: String,
+        val contentLength: Long
+    )
 
     override suspend fun doWork(): Result {
         val songId = inputData.getString(KEY_SONG_ID) ?: return Result.failure()
-        val quality = inputData.getString(KEY_QUALITY) ?: "NORMAL"
         val track = downloadDao.getBySongId(songId) ?: return Result.failure()
 
         // Pre-eviction: make room before starting a new download
@@ -57,9 +82,9 @@ class DownloadWorker @AssistedInject constructor(
             Log.w(TAG, "DownloadWorker: Pre-eviction failed (non-fatal): ${e.message}")
         }
 
-        // 1. Resolve stream URL from BFF
-        val streamResponse = try {
-            api.getStream(songId)
+        // 1. Resolve the URL through the same provider/fallback chain as playback.
+        val streamResult = try {
+            streamRepository.getStreamInfo(songId)
         } catch (e: Exception) {
             Log.e(TAG, "DownloadWorker: Failed to resolve stream for $songId: ${e.message}")
             downloadDao.updateProgress(songId, "FAILED", track.progress)
@@ -68,32 +93,45 @@ class DownloadWorker @AssistedInject constructor(
             )
         }
 
-        val targetUrl = streamResponse.streamUrl
-        if (targetUrl.isNullOrEmpty()) {
+        val targetUrl = (streamResult as? Resource.Success)?.data
+        if (targetUrl.isNullOrBlank()) {
+            val reason = (streamResult as? Resource.Error)?.message ?: "Stream no disponible"
             Log.e(TAG, "DownloadWorker: No audio stream found for $songId")
             downloadDao.updateProgress(songId, "FAILED", 0)
-            return Result.failure(workDataOf(KEY_ERROR to "Stream no disponible"))
+            return if (runAttemptCount < 3) Result.retry() else {
+                Result.failure(workDataOf(KEY_ERROR to reason))
+            }
         }
 
-        // 2. Prepare output file
+        // 2. Download to a temporary file; the final extension comes from Content-Type.
         downloadDao.updateProgress(songId, "DOWNLOADING", 0)
-        val extension = streamResponse.format ?: "m4a"
         val downloadDir = File(applicationContext.filesDir, "downloads")
         downloadDir.mkdirs()
-        val file = File(downloadDir, "$songId.$extension")
+        val partialFile = File(downloadDir, "$songId.part")
+        var completedFile: File? = null
 
         return try {
-            val checksum = downloadFile(targetUrl, file, songId)
+            val downloaded = downloadFile(targetUrl, partialFile, songId)
 
-            // 3. Integrity check — file must be non-empty and match content-length
-            if (file.length() == 0L) {
-                file.delete()
+            // 3. Integrity check — file must be non-empty and match Content-Length when present.
+            if (partialFile.length() == 0L ||
+                (downloaded.contentLength > 0L && partialFile.length() != downloaded.contentLength)
+            ) {
+                partialFile.delete()
                 Log.e(TAG, "DownloadWorker: Empty file after download for $songId")
                 downloadDao.insertRaw(track.copy(
-                    status = "FAILED", errorMessage = "Archivo vacío tras descarga", retryCount = runAttemptCount
+                    status = "FAILED", errorMessage = "Descarga incompleta", retryCount = runAttemptCount
                 ))
-                return Result.failure(workDataOf(KEY_ERROR to "Archivo vacío"))
+                return Result.failure(workDataOf(KEY_ERROR to "Descarga incompleta"))
             }
+
+            val file = File(downloadDir, "$songId.${downloaded.extension}")
+            if (file.exists()) file.delete()
+            if (!partialFile.renameTo(file)) {
+                partialFile.copyTo(file, overwrite = true)
+                partialFile.delete()
+            }
+            completedFile = file
 
             // 4. Store completed record with checksum
             downloadDao.insertRaw(track.copy(
@@ -103,16 +141,17 @@ class DownloadWorker @AssistedInject constructor(
                 fileSizeBytes = file.length(),
                 downloadedAt = System.currentTimeMillis(),
                 lastAccessedAt = System.currentTimeMillis(),
-                format = extension.uppercase(),
+                format = downloaded.extension.uppercase(),
                 bitrate = 128,
-                checksum = checksum,
+                checksum = downloaded.checksum,
                 retryCount = runAttemptCount
             ))
-            Log.d(TAG, "DownloadWorker: ✅ '${track.title}' (${file.length() / 1024}KB) sha=$checksum")
+            Log.d(TAG, "DownloadWorker: ✅ '${track.title}' (${file.length() / 1024}KB) sha=${downloaded.checksum}")
             Result.success()
 
         } catch (e: IOException) {
-            file.delete()
+            partialFile.delete()
+            completedFile?.delete()
             val isNoSpace = e.message?.contains("ENOSPC") == true || e.message?.contains("No space") == true
             Log.e(TAG, "DownloadWorker: IOException for '${track.title}': ${e.message}")
 
@@ -136,7 +175,8 @@ class DownloadWorker @AssistedInject constructor(
                 Result.failure(workDataOf(KEY_ERROR to (e.message ?: "Error de descarga")))
             }
         } catch (e: Exception) {
-            file.delete()
+            partialFile.delete()
+            completedFile?.delete()
             Log.e(TAG, "DownloadWorker: Unexpected error for '${track.title}': ${e.message}", e)
             downloadDao.insertRaw(track.copy(
                 status = "FAILED", errorMessage = e.message, retryCount = runAttemptCount
@@ -145,8 +185,8 @@ class DownloadWorker @AssistedInject constructor(
         }
     }
 
-    /** Downloads [url] to [file], updates DB progress every 5%, returns SHA-256 checksum */
-    private suspend fun downloadFile(url: String, file: File, songId: String): String {
+    /** Downloads [url] to [file], tracks progress and reports the verified container type. */
+    private suspend fun downloadFile(url: String, file: File, songId: String): DownloadResult {
         // FIX: rechazar URLs inseguras antes de abrir conexión
         // Android NSC bloquearía http:// de todas formas, pero esto da un error claro en el log
         if (!url.startsWith("https://")) {
@@ -158,11 +198,12 @@ class DownloadWorker @AssistedInject constructor(
         val request = Request.Builder().url(url).build()
         val digest = MessageDigest.getInstance("SHA-256")
 
-        okHttpClient.newCall(request).execute().use { response ->
+        return okHttpClient.newCall(request).execute().use { response ->
             if (!response.isSuccessful) throw IOException("HTTP ${response.code}")
 
             val body = response.body ?: throw IOException("Empty response body")
             val total = body.contentLength()
+            val extension = extensionForAudio(body.contentType()?.toString(), url)
             var downloaded = 0L
             var lastReportedPct = 0
 
@@ -184,11 +225,12 @@ class DownloadWorker @AssistedInject constructor(
                     }
                 }
             }
-        }
 
-        return digest.digest().joinToString("") { "%02x".format(it) }
+            DownloadResult(
+                checksum = digest.digest().joinToString("") { "%02x".format(it) },
+                extension = extension,
+                contentLength = total
+            )
+        }
     }
 }
-
-
-

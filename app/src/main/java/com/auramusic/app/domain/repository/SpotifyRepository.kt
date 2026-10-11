@@ -4,6 +4,7 @@ import com.auramusic.app.data.local.entity.SpotifyTokenEntity
 import com.auramusic.app.data.remote.SpotifyPlaylistDto
 import com.auramusic.app.data.remote.SpotifyTrackDto
 import com.auramusic.app.data.remote.SpotifyUserProfileDto
+import com.auramusic.app.domain.model.SpotifyOAuthCallback
 import kotlinx.coroutines.flow.Flow
 
 interface SpotifyRepository {
@@ -16,16 +17,18 @@ interface SpotifyRepository {
 
     /**
      * Genera la URL OAuth PKCE que debe abrirse en Custom Tabs.
-     * También almacena internamente el code_verifier para el exchange posterior.
-     * @return Pair(authUrl, codeVerifier)
+     * Persiste temporalmente code_verifier y state para validar el callback.
      */
-    fun buildAuthUrl(): Pair<String, String>
+    suspend fun buildAuthUrl(): Result<String>
+
+    /** Respuesta recibida por el servidor loopback local del teléfono. */
+    fun observeOAuthCallbacks(): Flow<SpotifyOAuthCallback>
 
     /**
      * Intercambia el authorization code por access_token + refresh_token.
      * Persiste los tokens en Room.
      */
-    suspend fun exchangeCode(code: String, codeVerifier: String): Result<Unit>
+    suspend fun exchangeCode(code: String, state: String): Result<Unit>
 
     /** Refresca el access_token si está a <60s de expirar */
     suspend fun refreshTokenIfNeeded(): Result<Unit>

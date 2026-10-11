@@ -33,6 +33,9 @@ interface QueueManager {
     /** Whether shuffle is active */
     val isShuffleEnabled: StateFlow<Boolean>
 
+    /** Whether playback may continue automatically when the queue item ends */
+    val isAutoplayEnabled: StateFlow<Boolean>
+
     /** IDs of songs already played (for autoplay dedup) */
     val playedIds: Set<String>
 
@@ -75,6 +78,9 @@ interface QueueManager {
     /** Toggle shuffle on/off. Reshuffles upcoming when turning on. */
     fun toggleShuffle()
 
+    /** Toggle automatic continuation on/off. */
+    fun toggleAutoplay()
+
     // ── Autoplay ──
 
     /** Append autoplay tracks (from related streams), deduplicating against played IDs */
@@ -88,4 +94,7 @@ interface QueueManager {
 
     /** Record a song ID as played */
     fun markAsPlayed(songId: String)
+
+    /** Clear played IDs before starting a new independent playback session */
+    fun resetPlayedHistory()
 }

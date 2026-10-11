@@ -43,7 +43,11 @@ class OfflineManager @Inject constructor(
         const val DEFAULT_MAX_STORAGE_BYTES = 500L * 1024 * 1024 // 500 MB
     }
 
-    private val workManager = WorkManager.getInstance(context)
+    // Hilt injects AuraApp fields before Application.onCreate. Resolving WorkManager here
+    // would ask AuraApp for its configuration before workerFactory has been injected.
+    private val workManager by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        WorkManager.getInstance(context)
+    }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     // ── Download Operations ──

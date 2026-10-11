@@ -2,30 +2,45 @@ package com.auramusic.app.data.repository
 
 import android.content.ComponentName
 import android.content.Context
-import android.net.Uri
 import android.util.Log
 import androidx.media3.common.MediaItem
-import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.C
+import androidx.media3.common.Timeline
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.auramusic.app.data.service.AuraMediaService
 import com.auramusic.app.data.service.OfflineAwareMediaSourceFactory
+import com.auramusic.app.core.media.toMediaMetadata
+import com.auramusic.app.core.media.toSongOrNull
 import com.auramusic.app.domain.model.Song
 import com.auramusic.app.domain.repository.PlayerRepository
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.channels.ProducerScope
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.shareIn
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.coroutines.resume
 
 @Singleton
 class PlayerRepositoryImpl @Inject constructor(
@@ -35,35 +50,33 @@ class PlayerRepositoryImpl @Inject constructor(
 
     companion object {
         private const val TAG = "XploitDebug"
+        private const val CONTROLLER_CONNECTION_TIMEOUT_MS = 10_000L
     }
 
-    private var mediaControllerFuture: ListenableFuture<MediaController>? = null
-    private val mediaController: MediaController?
-        get() = if (mediaControllerFuture?.isDone == true) mediaControllerFuture?.get() else null
-
-    init {
+    private val repositoryScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val connection = MediaControllerConnection {
         val sessionToken = SessionToken(context, ComponentName(context, AuraMediaService::class.java))
-        mediaControllerFuture = MediaController.Builder(context, sessionToken).buildAsync()
-        mediaControllerFuture?.addListener({
-            Log.d(TAG, "PlayerRepo: MediaController connected")
-        }, MoreExecutors.directExecutor())
+        MediaController.Builder(context, sessionToken).buildAsync()
     }
 
-    private suspend fun getController(): MediaController? {
-        if (mediaControllerFuture?.isDone == true) {
-            return mediaControllerFuture?.get()
-        }
-        var attempt = 0
-        while (mediaControllerFuture?.isDone != true && attempt < 10) {
-            delay(100)
-            attempt++
-        }
-        return try {
-            mediaControllerFuture?.get()
-        } catch (e: Exception) {
-            null
-        }
+    private suspend fun getController(): MediaController? = connection.get()
+    private suspend fun requireController(): MediaController = checkNotNull(getController()) {
+        "El servicio de reproducción no está conectado"
     }
+
+    private val connections = flow {
+        while (true) {
+            val controller = getController()
+            emit(controller)
+            while (controller?.isConnected == true) delay(500)
+            delay(500)
+        }
+    }.flowOn(Dispatchers.Main.immediate)
+        .shareIn(repositoryScope, SharingStarted.WhileSubscribed(5_000), replay = 1)
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    private fun <T> observeController(block: suspend ProducerScope<T>.() -> Unit): Flow<T> =
+        connections.flatMapLatest { callbackFlow(block) }.flowOn(Dispatchers.Main.immediate)
 
     /**
      * Builds a MediaItem with full metadata so the system notification
@@ -72,20 +85,33 @@ class PlayerRepositoryImpl @Inject constructor(
     private suspend fun buildMediaItem(url: String, song: Song): MediaItem {
         val resolvedUri = offlineMediaFactory.resolveUri(song.id, url)
         
-        val metadata = MediaMetadata.Builder()
-            .setTitle(song.title)
-            .setArtist(song.artist)
-            .setArtworkUri(Uri.parse(song.thumbnailUrl))
-            .build()
-
         return MediaItem.Builder()
             .setUri(resolvedUri.toString())
             .setMediaId(song.id)
-            .setMediaMetadata(metadata)
+            .setMediaMetadata(song.toMediaMetadata())
             .build()
     }
 
-    override val isPlaying: Flow<Boolean> = callbackFlow {
+    /**
+     * Emits the currently loaded Song reconstructed from ExoPlayer's MediaItem metadata.
+     * Uses callbackFlow + onMediaItemTransition so it's fully reactive and non-blocking.
+     * Emits null if no media item is loaded or metadata is empty.
+     */
+    override val currentSong: Flow<Song?> = observeController {
+        val listener = object : Player.Listener {
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                trySend(mediaItem?.toSongOrNull())
+            }
+        }
+
+        val controller = getController()
+        controller?.addListener(listener)
+        trySend(controller?.currentMediaItem?.toSongOrNull())
+
+        awaitClose { controller?.removeListener(listener) }
+    }
+
+    override val isPlaying: Flow<Boolean> = observeController {
         val listener = object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 trySend(isPlaying)
@@ -101,7 +127,7 @@ class PlayerRepositoryImpl @Inject constructor(
         }
     }
 
-    override val currentPosition: Flow<Long> = callbackFlow {
+    override val currentPosition: Flow<Long> = observeController {
         var isRunning = true
         val listener = object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -115,9 +141,9 @@ class PlayerRepositoryImpl @Inject constructor(
         val job = launch {
             while (isRunning) {
                 val currentPos = controller?.currentPosition ?: 0L
-                if (controller?.isPlaying == true) {
-                    trySend(currentPos)
-                }
+                // BUG 2 FIX: Always emit position, not just when playing.
+                // This keeps the slider and time display accurate during pause.
+                trySend(currentPos)
                 delay(500)
             }
         }
@@ -129,23 +155,41 @@ class PlayerRepositoryImpl @Inject constructor(
         }
     }
 
-    override val duration: Flow<Long> = callbackFlow {
+    override val duration: Flow<Long> = observeController {
+        val controller = getController()
+        fun emitDuration() {
+            val reported = controller?.duration ?: 0L
+            val metadataDuration = controller?.currentMediaItem
+                ?.toSongOrNull()
+                ?.durationSeconds
+                ?.coerceIn(0L, Long.MAX_VALUE / 1_000L)
+                ?.times(1_000L)
+                ?: 0L
+            trySend(
+                if (reported == C.TIME_UNSET || reported <= 0L) metadataDuration else reported
+            )
+        }
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
-                if (playbackState == Player.STATE_READY) {
-                    trySend(mediaController?.duration ?: 0L)
-                }
+                emitDuration()
+            }
+
+            override fun onTimelineChanged(timeline: Timeline, reason: Int) {
+                emitDuration()
+            }
+
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                emitDuration()
             }
         }
-        val controller = getController()
         controller?.addListener(listener)
-        trySend(controller?.duration ?: 0L)
+        emitDuration()
 
         awaitClose { controller?.removeListener(listener) }
     }
 
     /** Emits Unit every time a track reaches STATE_ENDED */
-    override val trackEnded: Flow<Unit> = callbackFlow {
+    override val trackEnded: Flow<Unit> = observeController {
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_ENDED) {
@@ -161,7 +205,7 @@ class PlayerRepositoryImpl @Inject constructor(
     }
 
     /** Emits the mediaId of the new track when ExoPlayer transitions between items */
-    override val mediaItemTransition: Flow<String?> = callbackFlow {
+    override val mediaItemTransition: Flow<String?> = observeController {
         val listener = object : Player.Listener {
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 val mediaId = mediaItem?.mediaId
@@ -176,7 +220,7 @@ class PlayerRepositoryImpl @Inject constructor(
     }
 
     override suspend fun play() {
-        withContext(Dispatchers.Main) { getController()?.play() }
+        withContext(Dispatchers.Main) { requireController().play() }
     }
 
     override suspend fun pause() {
@@ -184,13 +228,27 @@ class PlayerRepositoryImpl @Inject constructor(
     }
 
     override suspend fun seekTo(position: Long) {
-        withContext(Dispatchers.Main) { getController()?.seekTo(position) }
+        val controller = getController() ?: return
+        withContext(Dispatchers.Main) {
+            if (!controller.isCurrentMediaItemSeekable) {
+                Log.w(TAG, "PlayerRepo: seekTo ignored — current item is not seekable")
+                return@withContext
+            }
+            val knownDuration = controller.duration
+            val target = if (knownDuration != C.TIME_UNSET && knownDuration > 0L) {
+                position.coerceIn(0L, knownDuration)
+            } else {
+                position.coerceAtLeast(0L)
+            }
+            controller.seekTo(target)
+            Log.d(TAG, "PlayerRepo: seekTo($target)")
+        }
     }
 
     override suspend fun prepare(url: String, song: Song) {
-        val controller = getController() ?: return
         val mediaItem = buildMediaItem(url, song)
         withContext(Dispatchers.Main) {
+            val controller = requireController()
             controller.setMediaItem(mediaItem)
             controller.prepare()
         }
@@ -198,22 +256,53 @@ class PlayerRepositoryImpl @Inject constructor(
     }
 
     override suspend fun addNextMediaItem(url: String, song: Song) {
-        val controller = getController() ?: return
+        val controller = requireController()
         val mediaItem = buildMediaItem(url, song)
         withContext(Dispatchers.Main) {
             // Add after the current item so ExoPlayer pre-buffers it
-            controller.addMediaItem(mediaItem)
+            val insertIndex = (controller.currentMediaItemIndex + 1)
+                .coerceIn(0, controller.mediaItemCount)
+            controller.addMediaItem(insertIndex, mediaItem)
         }
         Log.d(TAG, "PlayerRepo: addNextMediaItem() queued '${song.title}'")
+    }
+
+    override suspend fun awaitPlaybackStarted(songId: String) = withContext(Dispatchers.Main) {
+        withTimeout(15_000L) {
+            val controller = requireController()
+            while (true) {
+                check(controller.isConnected) { "Se desconectó el servicio de reproducción" }
+                check(controller.currentMediaItem?.mediaId == songId) { "La canción cambió durante la carga" }
+                controller.playerError?.let { throw it }
+                if (controller.isPlaying) break
+                delay(100)
+            }
+        }
+    }
+
+    override suspend fun clearUpcomingMediaItems() {
+        val controller = getController() ?: return
+        withContext(Dispatchers.Main) {
+            val currentIndex = controller.currentMediaItemIndex
+            val firstUpcoming = currentIndex + 1
+            if (currentIndex >= 0 && firstUpcoming < controller.mediaItemCount) {
+                controller.removeMediaItems(firstUpcoming, controller.mediaItemCount)
+                Log.d(TAG, "PlayerRepo: cleared prefetched media items")
+            }
+        }
     }
 
     override suspend fun clearQueue() {
         val controller = getController() ?: return
         withContext(Dispatchers.Main) {
             val count = controller.mediaItemCount
-            if (count > 1) {
-                controller.removeMediaItems(1, count)
-                Log.d(TAG, "PlayerRepo: clearQueue() removed ${count - 1} queued items")
+            if (count > 0) {
+                // BUG 6 FIX: Clear ALL media items (including current) to prevent spurious
+                // transitions during the gap between clearQueue() and the next prepare().
+                // Previous code left item 0 intact, creating a window where ExoPlayer could
+                // transition to that stale item.
+                controller.clearMediaItems()
+                Log.d(TAG, "PlayerRepo: clearQueue() cleared all $count items")
             }
         }
     }
@@ -222,14 +311,14 @@ class PlayerRepositoryImpl @Inject constructor(
         val controller = getController() ?: return false
         // FIX: MediaController methods MUST be called from the main thread (Media3 requirement)
         return withContext(Dispatchers.Main) {
-            controller.hasNextMediaItem()
+            hasQueuedNext(controller)
         }
     }
 
     override suspend fun skipToNext() {
         val controller = getController() ?: return
         withContext(Dispatchers.Main) {
-            if (controller.hasNextMediaItem()) {
+            if (hasQueuedNext(controller)) {
                 controller.seekToNextMediaItem()
                 controller.play()
                 Log.d(TAG, "PlayerRepo: skipToNext() — moved to next queued item")
@@ -237,31 +326,39 @@ class PlayerRepositoryImpl @Inject constructor(
         }
     }
 
+    private fun hasQueuedNext(controller: MediaController): Boolean {
+        val currentIndex = controller.currentMediaItemIndex
+        return currentIndex >= 0 && currentIndex < controller.mediaItemCount - 1
+    }
+
     // ── Shuffle & Repeat ──
 
     override fun setRepeatMode(repeatMode: Int) {
-        // Media3 requires API calls from the main thread
-        kotlinx.coroutines.MainScope().launch {
-            withContext(Dispatchers.Main) {
-                mediaController?.repeatMode = repeatMode
+        repositoryScope.launch {
+            try {
+                getController()?.repeatMode = repeatMode
                 Log.d(TAG, "PlayerRepo: setRepeatMode($repeatMode)")
+            } catch (e: Exception) {
+                Log.w(TAG, "PlayerRepo: setRepeatMode failed: ${e.message}")
             }
         }
     }
 
     override fun setShuffleModeEnabled(shuffleModeEnabled: Boolean) {
-        // Media3 requires API calls from the main thread
-        kotlinx.coroutines.MainScope().launch {
-            withContext(Dispatchers.Main) {
-                mediaController?.shuffleModeEnabled = shuffleModeEnabled
+        repositoryScope.launch {
+            try {
+                getController()?.shuffleModeEnabled = shuffleModeEnabled
                 Log.d(TAG, "PlayerRepo: setShuffleModeEnabled($shuffleModeEnabled)")
+            } catch (e: Exception) {
+                Log.w(TAG, "PlayerRepo: setShuffleModeEnabled failed: ${e.message}")
             }
         }
     }
 
     // ── Error Handling ──
 
-    override val playerError: Flow<String?> = callbackFlow {
+    override val playerError: Flow<String?> = observeController {
+        val controller = getController()
         val listener = object : Player.Listener {
             override fun onPlayerError(error: PlaybackException) {
                 val msg = when (error.errorCode) {
@@ -281,21 +378,18 @@ class PlayerRepositoryImpl @Inject constructor(
                 Log.e(TAG, "PlayerRepo: onPlayerError — code=${error.errorCode}, msg=$msg", error)
                 trySend(msg)
 
-                // Reset player error state so subsequent playback attempts work
-                try {
-                    mediaController?.prepare()
-                } catch (e: Exception) {
-                    Log.w(TAG, "PlayerRepo: prepare() after error failed: ${e.message}")
-                }
+                // Observe only. Navigation owns retries; replaying here races with skips.
             }
         }
-        val controller = getController()
         controller?.addListener(listener)
 
         awaitClose { controller?.removeListener(listener) }
     }
 
     override fun release() {
-        mediaControllerFuture?.let { MediaController.releaseFuture(it) }
+        repositoryScope.launch {
+            connection.release()
+            repositoryScope.cancel()
+        }
     }
 }

@@ -1,13 +1,14 @@
 package com.auramusic.app.presentation.player
 
+import com.auramusic.app.core.util.Resource
 import com.auramusic.app.data.local.dao.PlaylistDao
 import com.auramusic.app.data.local.dao.SongDao
+import com.auramusic.app.data.repository.QueueManagerImpl
 import com.auramusic.app.data.service.SkipHandler
 import com.auramusic.app.domain.model.Song
 import com.auramusic.app.domain.model.PlaybackState
 import com.auramusic.app.domain.repository.FavoritesRepository
 import com.auramusic.app.domain.repository.PlayerRepository
-import com.auramusic.app.domain.repository.QueueManager
 import com.auramusic.app.domain.repository.StreamRepository
 import com.auramusic.app.domain.usecase.GetAudioStreamUseCase
 import com.auramusic.app.domain.usecase.GetLyricsUseCase
@@ -15,17 +16,21 @@ import com.auramusic.app.domain.usecase.ToggleFavoriteUseCase
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -47,7 +52,8 @@ class PlayerViewModelSkipRaceTest {
     private lateinit var mockSkipHandler: SkipHandler
     private lateinit var mockPlaylistDao: PlaylistDao
     private lateinit var mockSongDao: SongDao
-    private lateinit var mockQueueManager: QueueManager
+    private lateinit var mockOfflineManager: com.auramusic.app.data.repository.OfflineManager
+    private lateinit var queueManager: QueueManagerImpl
 
     private val fakeMediaTransitionFlow = MutableStateFlow<String?>(null)
 
@@ -70,20 +76,27 @@ class PlayerViewModelSkipRaceTest {
         mockToggleFav = mockk(relaxed = true)
         mockFavRepo = mockk(relaxed = true)
         mockStreamRepo = mockk(relaxed = true)
-        mockSkipHandler = mockk(relaxed = true) {
-            coEvery { skipRequests } returns kotlinx.coroutines.flow.MutableSharedFlow()
-        }
+        mockSkipHandler = mockk(relaxed = true)
         mockPlaylistDao = mockk(relaxed = true)
         mockSongDao = mockk(relaxed = true)
-        mockQueueManager = mockk(relaxed = true)
+        queueManager = QueueManagerImpl()
 
-        val mockOfflineManager: com.auramusic.app.data.repository.OfflineManager = mockk(relaxed = true)
+        mockOfflineManager = mockk(relaxed = true)
+        coEvery { mockOfflineManager.getOfflineFilePath(any()) } returns null
         val mockAnalyticsLogger: com.auramusic.app.core.analytics.AuraAnalyticsLogger = mockk(relaxed = true)
-        
         viewModel = PlayerViewModel(
-            mockPlayerRepo, mockGetStream, mockGetLyrics, mockToggleFav,
-            mockFavRepo, mockStreamRepo, mockSkipHandler, mockPlaylistDao,
-            mockSongDao, mockQueueManager, mockOfflineManager, mockAnalyticsLogger
+            playerRepository = mockPlayerRepo,
+            getAudioStreamUseCase = mockGetStream,
+            getLyricsUseCase = mockGetLyrics,
+            toggleFavoriteUseCase = mockToggleFav,
+            favoritesRepository = mockFavRepo,
+            streamRepository = mockStreamRepo,
+            skipHandler = mockSkipHandler,
+            playlistDao = mockPlaylistDao,
+            songDao = mockSongDao,
+            queueManager = queueManager,
+            offlineManager = mockOfflineManager,
+            analyticsLogger = mockAnalyticsLogger
         )
     }
 
@@ -93,15 +106,34 @@ class PlayerViewModelSkipRaceTest {
     }
 
     @Test
+    fun `previous uses restored queue when history is empty`() = runTest(testDispatcher) {
+        val first = Song("local_1", "First", "Artist", "", 100, "content://media/1")
+        val second = Song("local_2", "Second", "Artist", "", 100, "content://media/2")
+        queueManager.setQueue(listOf(first, second), 1)
+        viewModel.skipPrevious()
+        runCurrent()
+        assertEquals(first.id, queueManager.currentTrack.value?.id)
+        coVerify { mockPlayerRepo.prepare("content://media/1", first) }
+        coVerify(exactly = 0) { mockPlayerRepo.seekTo(any()) }
+    }
+
+    @Test
+    fun `previous restarts only when no earlier track exists`() = runTest(testDispatcher) {
+        queueManager.setQueue(listOf(Song("local_1", "First", "Artist", "", 100)), 0)
+        viewModel.skipPrevious()
+        runCurrent()
+        coVerify(exactly = 1) { mockPlayerRepo.seekTo(0L) }
+    }
+
+    @Test
     fun `rapid skipNext calls debounce and fire only once`() = runTest(testDispatcher) {
         val song1 = Song("1", "Song 1", "Artist", "", 100L, "")
         val song2 = Song("2", "Song 2", "Artist", "", 100L, "")
         val song3 = Song("3", "Song 3", "Artist", "", 100L, "")
         val playlist = listOf(song1, song2, song3)
 
-        // Setup playlist
-        viewModel.playSong(song1, playlist)
-        advanceTimeBy(100) // Let initial play run
+        // Prepare the queue directly so the skip path can be exercised in isolation.
+        queueManager.setQueue(playlist, startIndex = 0)
 
         // Rapid fire skipNext 5 times in 50ms
         repeat(5) {
@@ -109,10 +141,51 @@ class PlayerViewModelSkipRaceTest {
             advanceTimeBy(10)
         }
 
-        // Wait for the 100ms debounce of the LAST skip to complete
-        advanceTimeBy(150)
+        // Cooperatively advance both the real IO dispatcher and the test Main dispatcher.
+        repeat(40) {
+            withContext(Dispatchers.IO) { delay(25) }
+            runCurrent()
+        }
 
-        // verify playerRepository.clearQueue and prepare are only called ONCE for the final rapid skip
-        coVerify(exactly = 1) { mockPlayerRepo.clearQueue() }
+        // setMediaItem replaces the source atomically; skip must not clear first.
+        coVerify(exactly = 0) { mockPlayerRepo.clearQueue() }
+        assertEquals("2", queueManager.currentTrack.value?.id)
+        assertEquals(listOf("3"), viewModel.upNext.value.map { it.id })
+    }
+
+    @Test
+    fun `automatic end emitted while explicit song buffers is ignored`() = runTest(testDispatcher) {
+        val song1 = Song("1", "Song 1", "Artist", "", 100L, "")
+        val song2 = Song("2", "Song 2", "Artist", "", 100L, "")
+        coEvery { mockGetStream("1") } coAnswers {
+            delay(1_000)
+            Resource.Success("https://audio/1")
+        }
+
+        viewModel.playSong(song1, listOf(song1, song2))
+        runCurrent()
+        assertTrue(viewModel.playbackState.value is PlaybackState.Buffering)
+
+        viewModel.onAutomaticNext()
+        runCurrent()
+
+        assertEquals("1", queueManager.currentTrack.value?.id)
+        coVerify(exactly = 0) { mockGetStream("2") }
+    }
+
+    @Test
+    fun `repeat one restarts current item without advancing queue`() = runTest(testDispatcher) {
+        val song1 = Song("1", "Song 1", "Artist", "", 100L, "")
+        val song2 = Song("2", "Song 2", "Artist", "", 100L, "")
+        queueManager.setQueue(listOf(song1, song2), 0)
+        viewModel.toggleRepeat() // ALL
+        viewModel.toggleRepeat() // ONE
+
+        viewModel.onAutomaticNext()
+        runCurrent()
+
+        assertEquals("1", queueManager.currentTrack.value?.id)
+        coVerify(exactly = 1) { mockPlayerRepo.seekTo(0L) }
+        coVerify(exactly = 1) { mockPlayerRepo.play() }
     }
 }

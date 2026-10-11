@@ -2,7 +2,9 @@ package com.auramusic.app.data.repository
 
 import android.net.Uri
 import android.util.Log
-import com.auramusic.app.BuildConfig
+import com.auramusic.app.core.network.SpotifyOAuthLoopbackServer
+import com.auramusic.app.data.local.SpotifyConfigurationStore
+import com.auramusic.app.data.local.SpotifyOAuthSessionStore
 import com.auramusic.app.data.local.dao.SpotifyTokenDao
 import com.auramusic.app.data.local.entity.SpotifyTokenEntity
 import com.auramusic.app.data.remote.SpotifyApi
@@ -11,8 +13,13 @@ import com.auramusic.app.data.remote.SpotifyPlaylistDto
 import com.auramusic.app.data.remote.SpotifyTrackDto
 import com.auramusic.app.data.remote.SpotifyUserProfileDto
 import com.auramusic.app.domain.repository.SpotifyRepository
+import com.auramusic.app.domain.model.SpotifyOAuthCallback
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import retrofit2.HttpException
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.Base64
@@ -23,13 +30,17 @@ import javax.inject.Singleton
 class SpotifyRepositoryImpl @Inject constructor(
     private val api: SpotifyApi,
     private val authApi: SpotifyAuthApi,
-    private val tokenDao: SpotifyTokenDao
+    private val tokenDao: SpotifyTokenDao,
+    private val oauthSessionStore: SpotifyOAuthSessionStore,
+    private val configurationStore: SpotifyConfigurationStore,
+    private val loopbackServer: SpotifyOAuthLoopbackServer
 ) : SpotifyRepository {
+
+    private val refreshMutex = Mutex()
 
     companion object {
         private const val TAG = "SpotifyRepo"
-        private const val REDIRECT_URI = "auramusic://spotify/callback"
-        private const val SCOPES = "user-read-email playlist-read-private playlist-read-collaborative"
+        private const val SCOPES = "playlist-read-private playlist-read-collaborative"
         /** Renovar si faltan menos de 60 segundos */
         private const val REFRESH_THRESHOLD_MS = 60_000L
 
@@ -46,49 +57,67 @@ class SpotifyRepositoryImpl @Inject constructor(
             val hash = digest.digest(verifier.toByteArray(Charsets.US_ASCII))
             return Base64.getUrlEncoder().withoutPadding().encodeToString(hash)
         }
+
+        fun generateState(): String {
+            val bytes = ByteArray(32)
+            SecureRandom().nextBytes(bytes)
+            return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
+        }
     }
 
     // ─── Auth ────────────────────────────────────────────────────────────────
 
     override fun isAuthenticated(): Flow<Boolean> =
-        tokenDao.observeToken().map { it != null }
+        tokenDao.observeToken().map { token ->
+            token != null && token.accessToken.isNotBlank() && token.refreshToken.isNotBlank()
+        }
 
     override fun observeUserProfile(): Flow<SpotifyTokenEntity?> =
         tokenDao.observeToken()
 
-    override fun buildAuthUrl(): Pair<String, String> {
+    override suspend fun buildAuthUrl(): Result<String> = runCatching {
+        val clientId = configurationStore.requireClientId()
+        val redirectUri = loopbackServer.start().getOrThrow()
         val verifier = generateCodeVerifier()
         val challenge = generateCodeChallenge(verifier)
+        val state = generateState()
+        oauthSessionStore.save(verifier, state, redirectUri)
 
-        val url = Uri.Builder()
+        Uri.Builder()
             .scheme("https")
             .authority("accounts.spotify.com")
             .path("/authorize")
-            .appendQueryParameter("response_type",         "code")
-            .appendQueryParameter("client_id",             BuildConfig.SPOTIFY_CLIENT_ID)
-            .appendQueryParameter("redirect_uri",          REDIRECT_URI)
-            .appendQueryParameter("scope",                 SCOPES)
+            .appendQueryParameter("response_type", "code")
+            .appendQueryParameter("client_id", clientId)
+            .appendQueryParameter("redirect_uri", redirectUri)
+            .appendQueryParameter("scope", SCOPES)
+            .appendQueryParameter("state", state)
             .appendQueryParameter("code_challenge_method", "S256")
-            .appendQueryParameter("code_challenge",        challenge)
+            .appendQueryParameter("code_challenge", challenge)
             .build()
             .toString()
-
-        return Pair(url, verifier)
     }
 
-    override suspend fun exchangeCode(code: String, codeVerifier: String): Result<Unit> {
+    override fun observeOAuthCallbacks(): Flow<SpotifyOAuthCallback> = loopbackServer.callbacks
+
+    override suspend fun exchangeCode(code: String, state: String): Result<Unit> {
         return try {
+            val session = oauthSessionStore.consume(state)
+                ?: throw SecurityException("El callback OAuth no coincide con la sesión iniciada")
+            val clientId = configurationStore.requireClientId()
             val response = authApi.exchangeCode(
                 code         = code,
-                redirectUri  = REDIRECT_URI,
-                clientId     = BuildConfig.SPOTIFY_CLIENT_ID,
-                codeVerifier = codeVerifier
+                redirectUri  = session.redirectUri,
+                clientId     = clientId,
+                codeVerifier = session.verifier
             )
+            val refreshToken = response.refreshToken
+                ?: throw IllegalStateException("Spotify no devolvió refresh_token")
             val expiresAt = System.currentTimeMillis() + (response.expiresIn * 1000L)
             tokenDao.upsertToken(
                 SpotifyTokenEntity(
                     accessToken  = response.accessToken,
-                    refreshToken = response.refreshToken ?: "",
+                    refreshToken = refreshToken,
                     expiresAt    = expiresAt
                 )
             )
@@ -100,23 +129,27 @@ class SpotifyRepositoryImpl @Inject constructor(
         }
     }
 
-    override suspend fun refreshTokenIfNeeded(): Result<Unit> {
-        val token = tokenDao.getToken() ?: return Result.success(Unit) // no session
-        if (System.currentTimeMillis() < token.expiresAt - REFRESH_THRESHOLD_MS) {
-            return Result.success(Unit) // still valid
+    override suspend fun refreshTokenIfNeeded(): Result<Unit> = refreshToken(force = false)
+
+    private suspend fun refreshToken(force: Boolean): Result<Unit> = refreshMutex.withLock {
+        val token = tokenDao.getToken()
+            ?: return@withLock Result.failure(IllegalStateException("No hay sesión de Spotify"))
+        if (!force && System.currentTimeMillis() < token.expiresAt - REFRESH_THRESHOLD_MS) {
+            return@withLock Result.success(Unit)
         }
-        return try {
+        if (token.refreshToken.isBlank()) {
+            return@withLock Result.failure(IllegalStateException("La sesión no tiene refresh_token"))
+        }
+        try {
             val response = authApi.refreshToken(
                 refreshToken = token.refreshToken,
-                clientId     = BuildConfig.SPOTIFY_CLIENT_ID
+                clientId = configurationStore.requireClientId()
             )
-            val expiresAt = System.currentTimeMillis() + (response.expiresIn * 1000L)
             tokenDao.upsertToken(
                 token.copy(
                     accessToken = response.accessToken,
-                    // Spotify solo devuelve nuevo refresh_token si lo rotó
                     refreshToken = response.refreshToken ?: token.refreshToken,
-                    expiresAt    = expiresAt
+                    expiresAt = System.currentTimeMillis() + (response.expiresIn * 1000L)
                 )
             )
             Log.d(TAG, "Token refreshed — next expiry in ${response.expiresIn}s")
@@ -127,9 +160,39 @@ class SpotifyRepositoryImpl @Inject constructor(
         }
     }
 
+    private suspend fun <T> authenticatedCall(block: suspend () -> T): T {
+        refreshToken(force = false).getOrThrow()
+        var retriedUnauthorized = false
+        var retriedRateLimit = false
+
+        while (true) {
+            try {
+                return block()
+            } catch (error: HttpException) {
+                when {
+                    error.code() == 401 && !retriedUnauthorized -> {
+                        retriedUnauthorized = true
+                        refreshToken(force = true).getOrThrow()
+                    }
+                    error.code() == 429 && !retriedRateLimit -> {
+                        retriedRateLimit = true
+                        val retrySeconds = error.response()
+                            ?.headers()
+                            ?.get("Retry-After")
+                            ?.toLongOrNull()
+                            ?.coerceIn(1L, 30L)
+                            ?: 1L
+                        delay(retrySeconds * 1000L)
+                    }
+                    else -> throw error
+                }
+            }
+        }
+    }
+
     override suspend fun fetchAndStoreProfile(): Result<SpotifyUserProfileDto> {
         return try {
-            val profile = api.getProfile()
+            val profile = authenticatedCall { api.getProfile() }
             val token = tokenDao.getToken()
             if (token != null) {
                 tokenDao.upsertToken(
@@ -154,7 +217,7 @@ class SpotifyRepositoryImpl @Inject constructor(
             val all = mutableListOf<SpotifyPlaylistDto>()
             var offset = 0
             while (true) {
-                val page = api.getPlaylists(limit = 50, offset = offset)
+                val page = authenticatedCall { api.getPlaylists(limit = 50, offset = offset) }
                 all.addAll(page.items)
                 if (page.next == null) break
                 offset += 50
@@ -174,13 +237,21 @@ class SpotifyRepositoryImpl @Inject constructor(
             val all = mutableListOf<SpotifyTrackDto>()
             var offset = 0
             while (true) {
-                val page = api.getPlaylistTracks(playlistId = playlistId, offset = offset)
+                val page = authenticatedCall {
+                    api.getPlaylistItems(playlistId = playlistId, offset = offset)
+                }
                 page.items
-                    .mapNotNull { it.track }
-                    .filter { !it.isLocal && it.id != null } // ignorar tracks locales/eliminados
+                    .filterNot { it.isLocal }
+                    .mapNotNull { it.resolvedItem }
+                    .filter {
+                        !it.isLocal &&
+                            it.id != null &&
+                            it.isPlayable != false &&
+                            (it.type == null || it.type == "track")
+                    }
                     .forEach { all.add(it) }
                 if (page.next == null) break
-                offset += 100
+                offset += 50
             }
             Log.d(TAG, "Fetched ${all.size} tracks for playlist $playlistId")
             Result.success(all)
@@ -191,6 +262,8 @@ class SpotifyRepositoryImpl @Inject constructor(
     }
 
     override suspend fun logout() {
+        loopbackServer.stop()
+        oauthSessionStore.clear()
         tokenDao.deleteToken()
         Log.d(TAG, "Logged out")
     }

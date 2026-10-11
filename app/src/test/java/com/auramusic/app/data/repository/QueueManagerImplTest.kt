@@ -38,7 +38,7 @@ class QueueManagerImplTest {
         queueManager.setQueue(emptyList())
 
         assertThat(queueManager.queue.value).isEmpty()
-        assertThat(queueManager.currentIndex.value).isEqualTo(0)
+        assertThat(queueManager.currentIndex.value).isEqualTo(-1)
         assertThat(queueManager.currentTrack.value).isNull()
         assertThat(queueManager.upNext.value).isEmpty()
     }
@@ -116,6 +116,16 @@ class QueueManagerImplTest {
         assertThat(queueManager.currentIndex.value).isEqualTo(0)
         assertThat(queueManager.currentTrack.value?.id).isEqualTo("1")
         assertThat(queueManager.upNext.value).containsExactly(song("2"))
+    }
+
+    @Test
+    fun `removing current last track selects previous track`() {
+        queueManager.setQueue(listOf(song("1"), song("2")), startIndex = 1)
+
+        queueManager.removeFromQueue(1)
+
+        assertThat(queueManager.currentIndex.value).isEqualTo(0)
+        assertThat(queueManager.currentTrack.value?.id).isEqualTo("1")
     }
 
     @Test
@@ -292,6 +302,33 @@ class QueueManagerImplTest {
             .containsExactly("1", "2", "3", "4", "5").inOrder()
     }
 
+    @Test
+    fun `queue edits survive shuffle round trip`() {
+        queueManager.setQueue(listOf(song("1"), song("2"), song("3")), startIndex = 0)
+        queueManager.addToEndOfQueue(song("4"))
+        queueManager.removeFromQueue(1)
+
+        queueManager.toggleShuffle()
+        queueManager.toggleShuffle()
+
+        assertThat(queueManager.queue.value.map { it.id })
+            .containsExactly("1", "3", "4").inOrder()
+    }
+
+    @Test
+    fun `edits made while shuffled survive unshuffle`() {
+        queueManager.setQueue(listOf(song("1"), song("2"), song("3")), startIndex = 0)
+        queueManager.toggleShuffle()
+        queueManager.addToEndOfQueue(song("4"))
+        val indexOfThree = queueManager.queue.value.indexOfFirst { it.id == "3" }
+        queueManager.removeFromQueue(indexOfThree)
+
+        queueManager.toggleShuffle()
+
+        assertThat(queueManager.queue.value.map { it.id })
+            .containsExactly("1", "2", "4").inOrder()
+    }
+
     // ═══════════════════════════════════════════════════════════════════
     // appendAutoplayTracks
     // ═══════════════════════════════════════════════════════════════════
@@ -315,6 +352,26 @@ class QueueManagerImplTest {
         queueManager.appendAutoplayTracks(listOf(song("1")))
 
         assertThat(queueManager.queue.value).hasSize(1)
+    }
+
+    @Test
+    fun `appendAutoplayTracks deduplicates repeated ids in same batch`() {
+        queueManager.setQueue(listOf(song("1")), startIndex = 0)
+
+        queueManager.appendAutoplayTracks(listOf(song("2"), song("2"), song("3")))
+
+        assertThat(queueManager.queue.value.map { it.id })
+            .containsExactly("1", "2", "3").inOrder()
+    }
+
+    @Test
+    fun `appendAutoplayTracks caps upcoming queue`() {
+        queueManager.setQueue(listOf(song("current")), startIndex = 0)
+
+        queueManager.appendAutoplayTracks((1..75).map { song("auto-$it") })
+
+        assertThat(queueManager.upNext.value)
+            .hasSize(QueueManagerImpl.MAX_UPCOMING_TRACKS)
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -378,5 +435,23 @@ class QueueManagerImplTest {
         queueManager.setQueue(listOf(song("1")), startIndex = 0)
 
         assertThat(queueManager.playedIds).contains("1")
+    }
+
+    @Test
+    fun `resetPlayedHistory clears previous session ids`() {
+        queueManager.markAsPlayed("old")
+
+        queueManager.resetPlayedHistory()
+
+        assertThat(queueManager.playedIds).isEmpty()
+    }
+
+    @Test
+    fun `toggleAutoplay changes lifecycle independent setting`() {
+        assertThat(queueManager.isAutoplayEnabled.value).isTrue()
+
+        queueManager.toggleAutoplay()
+
+        assertThat(queueManager.isAutoplayEnabled.value).isFalse()
     }
 }

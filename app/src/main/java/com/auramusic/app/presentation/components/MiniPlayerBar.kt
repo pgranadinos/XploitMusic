@@ -6,6 +6,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
@@ -14,7 +15,10 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -24,7 +28,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
@@ -53,6 +56,7 @@ fun MiniPlayerBar(
     val isPlaying by viewModel.isPlaying.collectAsState()
     val isLoading by viewModel.isLoadingStream.collectAsState()
     val playbackState by viewModel.playbackState.collectAsState()
+    val isFavorite by viewModel.isFavorite.collectAsState()
     val currentPosition by viewModel.currentPosition.collectAsState()
     val duration by viewModel.duration.collectAsState()
 
@@ -67,45 +71,44 @@ fun MiniPlayerBar(
         val bgBrush = Brush.horizontalGradient(
             colors = listOf(
                 MaterialTheme.colorScheme.surfaceVariant,
-                MaterialTheme.colorScheme.surface
+                MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+                MaterialTheme.colorScheme.surfaceVariant
             )
         )
+        val progress = if (duration > 0L) {
+            (currentPosition.toFloat() / duration).coerceIn(0f, 1f)
+        } else {
+            0f
+        }
 
         Surface(
             modifier = Modifier
-                .fillMaxWidth(),
-            shadowElevation = 12.dp,
-            tonalElevation = 4.dp,
-            shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 5.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            shadowElevation = 10.dp,
+            tonalElevation = 0.dp,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f)),
+            shape = MaterialTheme.shapes.medium
         ) {
             Column {
-                // ── Progress Bar ──
-                LinearProgressIndicator(
-                    progress = { if (duration > 0) currentPosition.toFloat() / duration else 0f },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(2.dp),
-                    color = MaterialTheme.colorScheme.primary,
-                    trackColor = MaterialTheme.colorScheme.surfaceVariant
-                )
-
                 // ── Content Row ──
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(66.dp)
+                        .height(64.dp)
                         .background(bgBrush)
                         .clickable(onClick = onTap)
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     // Album Art
                     AsyncImage(
                         model = song.thumbnailUrl,
-                        contentDescription = "Album art for ${song.title}",
+                        contentDescription = "Carátula de ${song.title}",
                         modifier = Modifier
-                            .size(48.dp)
+                            .size(52.dp)
                             .clip(RoundedCornerShape(8.dp)),
                         contentScale = ContentScale.Crop
                     )
@@ -117,7 +120,7 @@ fun MiniPlayerBar(
                     ) {
                         Text(
                             text = song.title,
-                            style = MaterialTheme.typography.titleMedium,
+                            style = MaterialTheme.typography.titleSmall,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             color = MaterialTheme.colorScheme.onSurface,
@@ -129,19 +132,35 @@ fun MiniPlayerBar(
                         )
                         Text(
                             text = song.artist,
-                            style = MaterialTheme.typography.bodyMedium,
+                            style = MaterialTheme.typography.bodySmall,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
 
+                    IconButton(
+                        onClick = viewModel::toggleFavorite,
+                        modifier = Modifier.size(42.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                            contentDescription = if (isFavorite) "Quitar de favoritos" else "Añadir a favoritos",
+                            tint = if (isFavorite) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+
                     // Play / Pause / Loading button
                     Box(
                         modifier = Modifier
-                            .size(44.dp)
+                            .size(40.dp)
                             .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.2f))
+                            .background(MaterialTheme.colorScheme.primary)
                             .clickable { viewModel.togglePlayPause() },
                         contentAlignment = Alignment.Center
                     ) {
@@ -149,40 +168,35 @@ fun MiniPlayerBar(
                             CircularProgressIndicator(
                                 modifier = Modifier.size(24.dp),
                                 strokeWidth = 2.dp,
-                                color = MaterialTheme.colorScheme.primary
+                                color = MaterialTheme.colorScheme.onPrimary
                             )
                         } else if (isPlaying) {
-                            // Pause icon (two vertical bars)
-                            Row(
-                                horizontalArrangement = Arrangement.spacedBy(3.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.padding(horizontal = 10.dp)
-                            ) {
-                                Box(
-                                    Modifier
-                                        .width(4.dp)
-                                        .height(18.dp)
-                                        .clip(RoundedCornerShape(2.dp))
-                                        .background(MaterialTheme.colorScheme.primary)
-                                )
-                                Box(
-                                    Modifier
-                                        .width(4.dp)
-                                        .height(18.dp)
-                                        .clip(RoundedCornerShape(2.dp))
-                                        .background(MaterialTheme.colorScheme.primary)
-                                )
-                            }
+                            Icon(
+                                Icons.Default.Pause,
+                                contentDescription = "Pausar",
+                                tint = MaterialTheme.colorScheme.onPrimary,
+                                modifier = Modifier.size(24.dp)
+                            )
                         } else {
                             Icon(
                                 Icons.Default.PlayArrow,
-                                contentDescription = "Play",
-                                tint = MaterialTheme.colorScheme.primary,
+                                contentDescription = "Reproducir",
+                                tint = MaterialTheme.colorScheme.onPrimary,
                                 modifier = Modifier.size(26.dp)
                             )
                         }
                     }
                 }
+
+                // Progress sits at the lower edge, closer to Spotify's compact player.
+                LinearProgressIndicator(
+                    progress = { progress },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(2.dp),
+                    color = MaterialTheme.colorScheme.primary,
+                    trackColor = MaterialTheme.colorScheme.surface
+                )
             }
         }
     }

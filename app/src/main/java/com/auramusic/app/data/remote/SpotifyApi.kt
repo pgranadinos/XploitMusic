@@ -3,7 +3,6 @@ package com.auramusic.app.data.remote
 import retrofit2.http.GET
 import retrofit2.http.Path
 import retrofit2.http.Query
-import retrofit2.http.Url
 
 interface SpotifyApi {
 
@@ -22,21 +21,14 @@ interface SpotifyApi {
     ): SpotifyPagedPlaylistsDto
 
     /**
-     * Tracks de una playlist. Spotify devuelve máx 100 por página.
+     * Items de una playlist. Spotify devuelve máx 50 por página.
      * Solo pedimos los campos necesarios para el matching → reduce payload.
      */
-    @GET("playlists/{id}/tracks")
-    suspend fun getPlaylistTracks(
+    @GET("playlists/{id}/items")
+    suspend fun getPlaylistItems(
         @Path("id")      playlistId: String,
-        @Query("limit")  limit: Int = 100,
+        @Query("limit")  limit: Int = 50,
         @Query("offset") offset: Int = 0,
-        @Query("fields") fields: String = "next,items(track(id,name,duration_ms,artists(name),album(name,images),is_local))"
+        @Query("fields") fields: String = "next,items(is_local,item(id,type,is_playable,name,duration_ms,artists(name),album(name,images)))"
     ): SpotifyPagedTracksDto
-
-    /**
-     * Soporte para paginación dinámica: cuando Spotify devuelve una URL absoluta en `next`,
-     * hacemos el fetch directamente a esa URL en vez de construirla a mano.
-     */
-    @GET
-    suspend fun getNextPage(@Url url: String): SpotifyPagedTracksDto
 }
