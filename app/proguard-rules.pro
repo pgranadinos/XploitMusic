@@ -7,8 +7,8 @@
 -keepclassmembers,allowobfuscation class * {
     @com.google.gson.annotations.SerializedName <fields>;
 }
--keep class com.auramusic.app.data.remote.** { *; }
--keep class com.auramusic.app.data.dto.** { *; }
+-keep class com.xploitmusic.app.data.remote.** { *; }
+-keep class com.xploitmusic.app.data.dto.** { *; }
 
 # ── Retrofit ──
 -keepattributes Signature, InnerClasses, EnclosingMethod
@@ -32,7 +32,7 @@
 -keep class * extends androidx.room.RoomDatabase
 -keep @androidx.room.Entity class *
 -keep @androidx.room.Dao interface *
--keepclassmembers class com.auramusic.app.data.local.entity.** { *; }
+-keepclassmembers class com.xploitmusic.app.data.local.entity.** { *; }
 
 # ── Hilt / Dagger ──
 -dontwarn dagger.hilt.internal.aggregatedroot.codegen.**
@@ -50,11 +50,11 @@
 -dontwarn androidx.compose.**
 
 # ── Domain models (keep for reflection, serialization) ──
--keep class com.auramusic.app.domain.model.** { *; }
+-keep class com.xploitmusic.app.domain.model.** { *; }
 
 # ── App classes that use reflection ──
--keep class com.auramusic.app.AuraApp { *; }
--keep class com.auramusic.app.MainActivity { *; }
+-keep class com.xploitmusic.app.XploitApp { *; }
+-keep class com.xploitmusic.app.MainActivity { *; }
 
 # ── Kotlin Coroutines ──
 -dontwarn kotlinx.coroutines.**

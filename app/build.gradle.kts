@@ -5,11 +5,8 @@ plugins {
     alias(libs.plugins.androidApplication)
     alias(libs.plugins.jetbrainsKotlinAndroid)
     alias(libs.plugins.hiltAndroid)
-    // NO pongas nada de kapt aquí dentro para evitar el error de "Version not found"
+    alias(libs.plugins.ksp)
 }
-
-// ESTO VA FUERA DE LAS LLAVES (Línea 6 o 7):
-apply(plugin = "kotlin-kapt")
 
 val localProperties = Properties()
 val localPropertiesFile = rootProject.file("local.properties")
@@ -27,11 +24,11 @@ fun String.asBuildConfigString(): String =
     "\"${replace("\\", "\\\\").replace("\"", "\\\"")}\""
 
 android {
-    namespace = "com.auramusic.app"
+    namespace = "com.xploitmusic.app"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.auramusic.app"
+        applicationId = "com.xploitmusic.app"
         minSdk = 24
         targetSdk = 34
         versionCode = 2
@@ -110,8 +107,7 @@ dependencies {
 
     // Hilt
     implementation(libs.hilt.android)
-    //kapt(libs.hilt.compiler)
-    add("kapt", libs.hilt.compiler)
+    ksp(libs.hilt.compiler)
     implementation(libs.androidx.hilt.navigation.compose)
 
     // Media3
@@ -131,8 +127,7 @@ dependencies {
     // Room
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
-    //kapt(libs.androidx.room.compiler) // Or KSP if configured
-    add("kapt", libs.androidx.room.compiler)
+    ksp(libs.androidx.room.compiler)
     implementation(libs.material)
 
     testImplementation(libs.junit)
@@ -159,5 +154,5 @@ dependencies {
     // WorkManager + Hilt Worker support
     implementation(libs.androidx.work.runtime.ktx)
     implementation(libs.androidx.hilt.work)
-    add("kapt", libs.androidx.hilt.compiler)
+    ksp(libs.androidx.hilt.compiler)
 }

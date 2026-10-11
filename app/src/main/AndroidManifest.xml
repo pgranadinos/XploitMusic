@@ -13,7 +13,7 @@
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
 
     <application
-        android:name=".AuraApp"
+        android:name=".XploitApp"
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
@@ -58,7 +58,7 @@
             </intent-filter>
         </receiver>
         <service
-            android:name=".data.service.AuraMediaService"
+            android:name=".data.service.XploitMediaService"
             android:exported="true"
             android:foregroundServiceType="mediaPlayback">
             <intent-filter>
@@ -67,7 +67,7 @@
             </intent-filter>
         </service>
 
-        <!-- AuraApp supplies HiltWorkerFactory, so WorkManager must not initialize itself first. -->
+        <!-- XploitApp supplies HiltWorkerFactory, so WorkManager must not initialize itself first. -->
         <provider
             android:name="androidx.startup.InitializationProvider"
             android:authorities="${applicationId}.androidx-startup"
