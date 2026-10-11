@@ -25,4 +25,7 @@ error_body.json
 google-services.json
 
 # Backend (Node)
-aura-backend/node_modules/
+**/node_modules/
+# Copias de seguridad
+*.bak
+*.exe
