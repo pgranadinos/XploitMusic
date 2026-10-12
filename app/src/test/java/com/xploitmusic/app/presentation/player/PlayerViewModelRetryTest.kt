@@ -123,4 +123,26 @@ class PlayerViewModelRetryTest {
 
         verify(exactly = 2) { mockStreamRepo.invalidateStream("song_403") }
     }
+
+    @Test
+    fun `changing song after error does not apply saved position to new song`() = runTest(testDispatcher) {
+        val song1 = Song("song_1", "Song 1", "Artist", "", 100L, "http://audio/1")
+        val song2 = Song("song_2", "Song 2", "Artist", "", 100L, "http://audio/2")
+        coEvery { mockStreamRepo.getStreamInfo("song_1") } returns Resource.Success("http://audio/fresh1")
+        coEvery { mockStreamRepo.getStreamInfo("song_2") } returns Resource.Success("http://audio/fresh2")
+
+        viewModel.playSingleSong(song1)
+        runCurrent()
+
+        // Emit error on song 1 to capture position
+        playerErrorFlow.emit("Error del servidor de audio (HTTP 403)")
+        runCurrent()
+
+        // User changes song to song 2
+        viewModel.playSingleSong(song2)
+        runCurrent()
+
+        // Verify seekTo(5000L) was never called for song_2
+        coVerify(exactly = 0) { mockPlayerRepo.seekTo(5000L) }
+    }
 }

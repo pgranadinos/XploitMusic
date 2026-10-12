@@ -103,6 +103,7 @@ class PlayerViewModel @Inject constructor(
     val errorMessage = _errorMessage.asStateFlow()
 
     private var pendingResumePositionMs: Long? = null
+    private var pendingResumePositionSongId: String? = null
     private var currentSongRetryCount = 0
 
     // Track the pre-fetched next song so we can update _currentSong on transition
@@ -256,6 +257,7 @@ class PlayerViewModel @Inject constructor(
 
                         currentSongRetryCount++
                         pendingResumePositionMs = if (savedPosition > 1000L) savedPosition else null
+                        pendingResumePositionSongId = capturedSongId
 
                         streamRepository.invalidateStream(capturedSongId)
 
@@ -264,7 +266,7 @@ class PlayerViewModel @Inject constructor(
 
                         viewModelScope.launch {
                             if (_playGeneration == capturedGen && _currentSong.value?.id == capturedSongId) {
-                                playInternal(currentSong, capturedGen)
+                                playInternal(currentSong, capturedGen, isRetry = true)
                             } else {
                                 Log.d(TAG, "PlayerVM: Playback target or generation changed during retry — ignoring retry.")
                             }
@@ -511,7 +513,12 @@ class PlayerViewModel @Inject constructor(
      * waits for ALL children to complete (including slow getRelatedSongs).
      * Instead, we launch background tasks independently in viewModelScope.
      */
-    private suspend fun playInternal(song: Song, generation: Long = _playGeneration) {
+    private suspend fun playInternal(song: Song, generation: Long = _playGeneration, isRetry: Boolean = false) {
+        if (!isRetry) {
+            currentSongRetryCount = 0
+            pendingResumePositionMs = null
+            pendingResumePositionSongId = null
+        }
         // OPTIMISTIC UPDATE: Set _currentSong immediately so the UI shows the song
         // while we fetch the stream URL. ExoPlayer transition will confirm later.
         _currentSong.value = song
@@ -638,10 +645,16 @@ class PlayerViewModel @Inject constructor(
                     if (!streamUrl.isNullOrBlank()) {
                         Log.d(TAG, "PlayerVM: ✅ Stream URL obtained (${streamUrl.take(80)}...)")
                         playerRepository.prepare(streamUrl, song)
-                        val posToSeek = pendingResumePositionMs
-                        pendingResumePositionMs = null
-                        if (posToSeek != null && posToSeek > 0L) {
-                            playerRepository.seekTo(posToSeek)
+                        if (pendingResumePositionSongId == song.id) {
+                            val posToSeek = pendingResumePositionMs
+                            pendingResumePositionMs = null
+                            pendingResumePositionSongId = null
+                            if (posToSeek != null && posToSeek > 0L) {
+                                playerRepository.seekTo(posToSeek)
+                            }
+                        } else {
+                            pendingResumePositionMs = null
+                            pendingResumePositionSongId = null
                         }
                         playerRepository.play()
                         _ignoringTransition = false // Allow the real MediaItemTransition through
@@ -1108,7 +1121,6 @@ class PlayerViewModel @Inject constructor(
 
     private fun resetAutoSkipCounter() {
         consecutiveAutoSkips = 0
-        currentSongRetryCount = 0
     }
 
     /**
