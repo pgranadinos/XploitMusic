@@ -18,7 +18,7 @@ class LatamChartsLiveTest {
         val client = YouTubeMusicClient(OkHttpClient.Builder()
             .callTimeout(20, TimeUnit.SECONDS).build())
 
-        val repository = StreamRepositoryImpl(mockk(), mockk(), client)
+        val repository = StreamRepositoryImpl(mockk(), mockk(), client, mockk(relaxed = true))
         val result = repository.getLatamCharts(forceRefresh = true)
         assertThat(result.data).isNotNull()
         val selection = result.data!!

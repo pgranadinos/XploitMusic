@@ -55,7 +55,8 @@ class PlayerViewModel @Inject constructor(
     private val songDao: SongDao,
     private val queueManager: QueueManager,
     private val offlineManager: OfflineManager,
-    private val analyticsLogger: XploitAnalyticsLogger
+    private val analyticsLogger: XploitAnalyticsLogger,
+    private val playbackLogManager: com.xploitmusic.app.core.util.PlaybackLogManager
 ) : ViewModel(), SkipHandler.Delegate {
 
     // ── Step 1: Explicit Playback State Machine ──
@@ -100,6 +101,9 @@ class PlayerViewModel @Inject constructor(
     // Error message
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage = _errorMessage.asStateFlow()
+
+    private var pendingResumePositionMs: Long? = null
+    private var currentSongRetryCount = 0
 
     // Track the pre-fetched next song so we can update _currentSong on transition
     private var _prefetchedNextSong: Song? = null
@@ -244,11 +248,33 @@ class PlayerViewModel @Inject constructor(
             playerRepository.playerError.collect { errorMsg ->
                 if (errorMsg != null) {
                     Log.e(TAG, "PlayerVM: Player error received: $errorMsg")
-                    // Friendly message for bot/sign-in/403 errors
-                    val friendlyMsg = makeFriendlyError(errorMsg)
-                    _errorMessage.value = friendlyMsg
-                    _playbackState.value = PlaybackState.Error(friendlyMsg)
-                    triggerAutoSkip()
+                    val currentSong = _currentSong.value
+                    if (currentSong != null && currentSongRetryCount < 2 && (errorMsg.contains("IO_BAD_HTTP_STATUS") || errorMsg.contains("Source error") || errorMsg.contains("HTTP") || errorMsg.contains("403"))) {
+                        val capturedGen = _playGeneration
+                        val capturedSongId = currentSong.id
+                        val savedPosition = currentPosition.value
+
+                        currentSongRetryCount++
+                        pendingResumePositionMs = if (savedPosition > 1000L) savedPosition else null
+
+                        streamRepository.invalidateStream(capturedSongId)
+
+                        Log.w(TAG, "PlayerVM: 🔄 Stream expired or HTTP error for '${currentSong.title}'. Retrying fetch (attempt $currentSongRetryCount)...")
+                        playbackLogManager.log("PLAYBACK", "WARN", "Retrying stream fetch for song '${currentSong.title}' ($capturedSongId) due to error: $errorMsg (attempt $currentSongRetryCount)")
+
+                        viewModelScope.launch {
+                            if (_playGeneration == capturedGen && _currentSong.value?.id == capturedSongId) {
+                                playInternal(currentSong, capturedGen)
+                            } else {
+                                Log.d(TAG, "PlayerVM: Playback target or generation changed during retry — ignoring retry.")
+                            }
+                        }
+                    } else {
+                        val friendlyMsg = makeFriendlyError(errorMsg)
+                        _errorMessage.value = friendlyMsg
+                        _playbackState.value = PlaybackState.Error(friendlyMsg)
+                        triggerAutoSkip()
+                    }
                 }
             }
         }
@@ -612,6 +638,11 @@ class PlayerViewModel @Inject constructor(
                     if (!streamUrl.isNullOrBlank()) {
                         Log.d(TAG, "PlayerVM: ✅ Stream URL obtained (${streamUrl.take(80)}...)")
                         playerRepository.prepare(streamUrl, song)
+                        val posToSeek = pendingResumePositionMs
+                        pendingResumePositionMs = null
+                        if (posToSeek != null && posToSeek > 0L) {
+                            playerRepository.seekTo(posToSeek)
+                        }
                         playerRepository.play()
                         _ignoringTransition = false // Allow the real MediaItemTransition through
                         _playbackState.value = PlaybackState.Playing(song, 0L)
@@ -1077,6 +1108,7 @@ class PlayerViewModel @Inject constructor(
 
     private fun resetAutoSkipCounter() {
         consecutiveAutoSkips = 0
+        currentSongRetryCount = 0
     }
 
     /**

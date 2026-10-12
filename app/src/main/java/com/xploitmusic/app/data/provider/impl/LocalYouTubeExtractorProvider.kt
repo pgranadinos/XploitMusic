@@ -27,6 +27,10 @@ class LocalYouTubeExtractorProvider @Inject constructor(
             extractor.getStream(videoId)
         }
 
+    fun invalidateStream(videoId: String) {
+        extractor.invalidateStream(videoId)
+    }
+
     override suspend fun getRelated(videoId: String): Result<List<Song>> =
         executeWithRetry(providerId, timeoutMs = 45_000L, maxRetries = 0) {
             extractor.getRelated(videoId)

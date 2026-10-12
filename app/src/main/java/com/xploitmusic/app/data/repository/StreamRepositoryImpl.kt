@@ -110,6 +110,10 @@ class StreamRepositoryImpl @Inject constructor(
             }
         )
     }
+
+    override fun invalidateStream(songId: String) {
+        gateway.invalidateStream(songId)
+    }
     
     override suspend fun getHomeFeed(): Resource<XploitHomeFeedResponse> {
         return try {

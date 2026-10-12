@@ -8,4 +8,5 @@ interface ProviderGateway {
     suspend fun getStream(videoId: String): Result<String>
     suspend fun getRelated(videoId: String): Result<List<Song>>
     suspend fun getTrending(region: String): Result<List<Song>>
+    fun invalidateStream(videoId: String)
 }

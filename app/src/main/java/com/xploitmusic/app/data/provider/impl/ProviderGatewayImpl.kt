@@ -12,7 +12,7 @@ import javax.inject.Inject
 
 class ProviderGatewayImpl @Inject constructor(
     youTubeMusicProvider: YouTubeMusicProvider,
-    localYouTubeProvider: LocalYouTubeExtractorProvider,
+    private val localYouTubeProvider: LocalYouTubeExtractorProvider,
     bffProvider: BffProvider,
     pipedProvider: PipedProvider,
     invidiousProvider: InvidiousProvider,
@@ -93,5 +93,9 @@ class ProviderGatewayImpl @Inject constructor(
 
     override suspend fun getTrending(region: String): Result<List<Song>> {
         return executeWithFallback(OperationType.GET_TRENDING, { it.isNotEmpty() }) { it.getTrending(region) }
+    }
+
+    override fun invalidateStream(videoId: String) {
+        localYouTubeProvider.invalidateStream(videoId)
     }
 }

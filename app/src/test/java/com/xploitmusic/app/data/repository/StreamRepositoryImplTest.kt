@@ -28,7 +28,7 @@ class StreamRepositoryImplTest {
         gateway = mockk(relaxed = true)
         val analyticsLogger: com.xploitmusic.app.core.analytics.XploitAnalyticsLogger = mockk(relaxed = true)
         youtubeMusicClient = mockk()
-        repository = StreamRepositoryImpl(gateway, analyticsLogger, youtubeMusicClient)
+        repository = StreamRepositoryImpl(gateway, analyticsLogger, youtubeMusicClient, mockk(relaxed = true))
     }
 
     @Test

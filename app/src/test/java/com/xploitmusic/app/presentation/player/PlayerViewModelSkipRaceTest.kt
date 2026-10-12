@@ -84,6 +84,7 @@ class PlayerViewModelSkipRaceTest {
         mockOfflineManager = mockk(relaxed = true)
         coEvery { mockOfflineManager.getOfflineFilePath(any()) } returns null
         val mockAnalyticsLogger: com.xploitmusic.app.core.analytics.XploitAnalyticsLogger = mockk(relaxed = true)
+        val mockPlaybackLogManager: com.xploitmusic.app.core.util.PlaybackLogManager = mockk(relaxed = true)
         viewModel = PlayerViewModel(
             playerRepository = mockPlayerRepo,
             getAudioStreamUseCase = mockGetStream,
@@ -96,7 +97,8 @@ class PlayerViewModelSkipRaceTest {
             songDao = mockSongDao,
             queueManager = queueManager,
             offlineManager = mockOfflineManager,
-            analyticsLogger = mockAnalyticsLogger
+            analyticsLogger = mockAnalyticsLogger,
+            playbackLogManager = mockPlaybackLogManager
         )
     }
 

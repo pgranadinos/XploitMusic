@@ -59,6 +59,10 @@ class NewPipeExtractorClient @Inject constructor(
     private val streamInfoCache = ConcurrentHashMap<String, CachedInfo>()
     private val extractionMutex = Mutex()
 
+    fun invalidateStream(videoId: String) {
+        streamInfoCache.remove(videoId)
+    }
+
     init {
         synchronized(initLock) {
             if (NewPipe.getDownloader() == null) {

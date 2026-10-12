@@ -19,5 +19,5 @@ interface StreamRepository {
     suspend fun getLatamCharts(forceRefresh: Boolean = false): Resource<LatamCharts>
     suspend fun getDiscovery(): Resource<List<Song>>
     suspend fun getGenreSongs(genre: String): Resource<List<Song>>
-    
+    fun invalidateStream(songId: String)
 }
