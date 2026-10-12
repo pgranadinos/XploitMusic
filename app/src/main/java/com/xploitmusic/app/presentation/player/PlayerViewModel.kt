@@ -863,6 +863,12 @@ class PlayerViewModel @Inject constructor(
 
         _skipJob?.cancel()
         _skipJob = viewModelScope.launch {
+            withContext(Dispatchers.IO) { delay(80) }
+            val generation = ++_playGeneration
+            try {
+                playerRepository.pause()
+            } catch (_: Exception) {}
+
             playerRepository.clearUpcomingMediaItems()
 
             // Mode A: Navigating within history stack
@@ -870,6 +876,7 @@ class PlayerViewModel @Inject constructor(
                 val nextCursor = _historyCursor + 1
                 val song = _historyStack[nextCursor]
                 Log.d(TAG, "PlayerVM: History next → index $nextCursor: '${song.title}'")
+                _currentSong.value = song
                 // When cursor reaches the end of history, return to live mode
                 playHistorySong(song, if (nextCursor == _historyStack.lastIndex) -1 else nextCursor)
                 return@launch
@@ -881,7 +888,8 @@ class PlayerViewModel @Inject constructor(
             val nextSong = queueManager.skipToNext()
             if (nextSong != null) {
                 Log.d(TAG, "PlayerVM: QueueManager next → '${nextSong.title}'")
-                playInternal(nextSong)
+                _currentSong.value = nextSong
+                playInternal(nextSong, generation)
             } else {
                 Log.d(TAG, "PlayerVM: Queue end reached and autoplay disabled. Stopping.")
                 playerRepository.pause()
@@ -947,6 +955,7 @@ class PlayerViewModel @Inject constructor(
     override fun onSkipNext() = skipNext()
     override fun onSkipPrevious() = skipPrevious()
     override fun onAutomaticNext() {
+        if (_ignoringTransition || _playbackState.value is PlaybackState.Buffering) return
         viewModelScope.launch {
             Log.d(TAG, "PlayerVM: Automatic next triggered by natural track completion")
             _autoSkipJob?.cancel()
@@ -956,7 +965,6 @@ class PlayerViewModel @Inject constructor(
             _ignoringTransition = false
 
             if (_repeatMode.value == Player.REPEAT_MODE_ONE) {
-                val current = _currentSong.value ?: return@launch
                 playerRepository.seekTo(0)
                 playerRepository.play()
                 return@launch

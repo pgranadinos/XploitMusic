@@ -100,7 +100,7 @@ class PlayerViewModelRetryTest {
     @Test
     fun `http 403 error invalidates stream and retries up to 2 times`() = runTest(testDispatcher) {
         val testSong = Song("song_403", "Test 403", "Artist", "", 100L, "http://audio/403")
-        coEvery { mockStreamRepo.getStreamInfo("song_403") } returns Resource.Success("http://audio/fresh")
+        coEvery { mockGetStream("song_403") } returns Resource.Success("http://audio/fresh")
 
         viewModel.playSingleSong(testSong)
         runCurrent()
@@ -128,8 +128,8 @@ class PlayerViewModelRetryTest {
     fun `changing song after error does not apply saved position to new song`() = runTest(testDispatcher) {
         val song1 = Song("song_1", "Song 1", "Artist", "", 100L, "http://audio/1")
         val song2 = Song("song_2", "Song 2", "Artist", "", 100L, "http://audio/2")
-        coEvery { mockStreamRepo.getStreamInfo("song_1") } returns Resource.Success("http://audio/fresh1")
-        coEvery { mockStreamRepo.getStreamInfo("song_2") } returns Resource.Success("http://audio/fresh2")
+        coEvery { mockGetStream("song_1") } returns Resource.Success("http://audio/fresh1")
+        coEvery { mockGetStream("song_2") } returns Resource.Success("http://audio/fresh2")
 
         viewModel.playSingleSong(song1)
         runCurrent()
