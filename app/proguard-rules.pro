@@ -68,3 +68,10 @@
 -keepattributes *Annotation*
 -keepattributes SourceFile,LineNumberTable
 -renamesourcefileattribute SourceFile
+
+# ── Strip verbose, debug, and info logs in release ──
+-assumenosideeffects class android.util.Log {
+    public static *** v(...);
+    public static *** d(...);
+    public static *** i(...);
+}
