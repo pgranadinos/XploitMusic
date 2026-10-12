@@ -23,7 +23,7 @@ object DatabaseModule {
     @Provides
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): XploitDatabase {
-        return Room.databaseBuilder(
+        val builder = Room.databaseBuilder(
             context,
             XploitDatabase::class.java,
             "xploit_music.db"
@@ -33,8 +33,12 @@ object DatabaseModule {
             XploitDatabase.MIGRATION_8_9,
             XploitDatabase.MIGRATION_9_10
         )
-        .fallbackToDestructiveMigration()
-        .build()
+
+        if (com.xploitmusic.app.BuildConfig.DEBUG) {
+            builder.fallbackToDestructiveMigration()
+        }
+
+        return builder.build()
     }
 
     @Provides
