@@ -863,7 +863,7 @@ class PlayerViewModel @Inject constructor(
 
         _skipJob?.cancel()
         _skipJob = viewModelScope.launch {
-            withContext(Dispatchers.IO) { delay(80) }
+            delay(80)
             val generation = ++_playGeneration
             try {
                 playerRepository.pause()

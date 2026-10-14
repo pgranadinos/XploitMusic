@@ -143,11 +143,8 @@ class PlayerViewModelSkipRaceTest {
             advanceTimeBy(10)
         }
 
-        // Cooperatively advance both the real IO dispatcher and the test Main dispatcher.
-        repeat(40) {
-            withContext(Dispatchers.IO) { delay(25) }
-            runCurrent()
-        }
+        advanceTimeBy(200)
+        runCurrent()
 
         // setMediaItem replaces the source atomically; skip must not clear first.
         coVerify(exactly = 0) { mockPlayerRepo.clearQueue() }
