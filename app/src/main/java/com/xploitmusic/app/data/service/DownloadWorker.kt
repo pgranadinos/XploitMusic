@@ -19,6 +19,7 @@ import com.xploitmusic.app.data.repository.OfflineManager
 import com.xploitmusic.app.domain.repository.StreamRepository
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
+import kotlinx.coroutines.CancellationException
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
@@ -82,6 +83,8 @@ class DownloadWorker @AssistedInject constructor(
         // Establish foreground notification for WorkManager (targetSdk 34 compliant)
         try {
             setForeground(createForegroundInfo(track.title, 0))
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.w(TAG, "DownloadWorker: Could not set foreground service: ${e.message}")
         }
@@ -89,6 +92,8 @@ class DownloadWorker @AssistedInject constructor(
         // Pre-eviction: make room before starting a new download
         try {
             offlineManager.evictIfNeeded()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.w(TAG, "DownloadWorker: Pre-eviction failed (non-fatal): ${e.message}")
         }
@@ -96,6 +101,8 @@ class DownloadWorker @AssistedInject constructor(
         // 1. Resolve the URL through the same provider/fallback chain as playback.
         val streamResult = try {
             streamRepository.getStreamInfo(songId)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "DownloadWorker: Failed to resolve stream for $songId: ${e.message}")
             downloadDao.updateProgress(songId, "FAILED", track.progress)
@@ -167,6 +174,11 @@ class DownloadWorker @AssistedInject constructor(
             Log.d(TAG, "DownloadWorker: ✅ '${track.title}' (${file.length() / 1024}KB) sha=${downloaded.checksum}")
             Result.success()
 
+        } catch (e: CancellationException) {
+            partialFile.delete()
+            completedFile?.delete()
+            Log.d(TAG, "DownloadWorker: Download cancelled for '${track.title}'")
+            throw e
         } catch (e: IOException) {
             partialFile.delete()
             completedFile?.delete()
@@ -241,6 +253,8 @@ class DownloadWorker @AssistedInject constructor(
                             downloadDao.updateProgress(songId, "DOWNLOADING", pct)
                             try {
                                 setForeground(createForegroundInfo(songTitle, pct))
+                            } catch (e: CancellationException) {
+                                throw e
                             } catch (_: Exception) {}
                         }
                     }
