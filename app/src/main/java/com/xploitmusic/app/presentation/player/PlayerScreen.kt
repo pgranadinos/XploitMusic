@@ -76,6 +76,16 @@ fun PlayerScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
 
+    val notificationPermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (!isGranted) {
+            coroutineScope.launch {
+                snackbarHostState.showSnackbar("Permiso de notificaciones necesario para ver el progreso de descarga.")
+            }
+        }
+    }
+
     var showQueueSheet by remember { mutableStateOf(false) }
     var showLyricsSheet by remember { mutableStateOf(false) }
     var showPlaylistSheet by remember { mutableStateOf(false) }
@@ -200,7 +210,15 @@ fun PlayerScreen(
                                 handleFavoriteClick(viewModel, isFavorite, coroutineScope, snackbarHostState)
                             },
                             onDownloadClick = {
-                                handleDownloadClick(viewModel, downloadState?.status, coroutineScope, snackbarHostState)
+                                handleDownloadClick(
+                                    context,
+                                    viewModel,
+                                    downloadState?.status,
+                                    coroutineScope,
+                                    snackbarHostState
+                                ) {
+                                    notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                                }
                             }
                         )
                     }
@@ -232,7 +250,15 @@ fun PlayerScreen(
                             handleFavoriteClick(viewModel, isFavorite, coroutineScope, snackbarHostState)
                         },
                         onDownloadClick = {
-                            handleDownloadClick(viewModel, downloadState?.status, coroutineScope, snackbarHostState)
+                            handleDownloadClick(
+                                context,
+                                viewModel,
+                                downloadState?.status,
+                                coroutineScope,
+                                snackbarHostState
+                            ) {
+                                notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                            }
                         }
                     )
                     Spacer(modifier = Modifier.height(8.dp))
@@ -633,11 +659,22 @@ private fun downloadActionLabel(status: String?, progress: Int): String = when (
 }
 
 private fun handleDownloadClick(
+    context: android.content.Context,
     viewModel: PlayerViewModel,
     currentStatus: String?,
     coroutineScope: CoroutineScope,
-    snackbarHostState: SnackbarHostState
+    snackbarHostState: SnackbarHostState,
+    onRequestNotificationPermission: () -> Unit
 ) {
+    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU &&
+        androidx.core.content.ContextCompat.checkSelfPermission(
+            context,
+            android.Manifest.permission.POST_NOTIFICATIONS
+        ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+    ) {
+        onRequestNotificationPermission()
+    }
+
     viewModel.toggleDownload()
     coroutineScope.launch {
         snackbarHostState.currentSnackbarData?.dismiss()

@@ -1,9 +1,16 @@
 package com.xploitmusic.app.data.service
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.Context
+import android.content.pm.ServiceInfo
+import android.os.Build
 import android.util.Log
+import androidx.core.app.NotificationCompat
 import androidx.hilt.work.HiltWorker
 import androidx.work.CoroutineWorker
+import androidx.work.ForegroundInfo
+import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.xploitmusic.app.core.util.Resource
@@ -19,14 +26,8 @@ import java.io.IOException
 import java.security.MessageDigest
 
 /**
- * WorkManager worker that downloads a single track's audio file.
- * Resolves stream URL via BFF, downloads via OkHttp with progress tracking.
- *
- * Edge cases handled:
- *  - File integrity (size + SHA-256 checksum matches contentLength)
- *  - ENOSPC (no space left on device) → immediate FAILED, no retry
- *  - Network timeout / API failure → retry up to 3 times with exponential backoff
- *  - Partial file left behind after failure → deleted on every error path
+ * WorkManager worker that downloads a single track's audio file as a Foreground Service.
+ * Displays real-time progress, supports cancellation, and notifies on completion or failure.
  */
 @HiltWorker
 class DownloadWorker @AssistedInject constructor(
@@ -44,6 +45,9 @@ class DownloadWorker @AssistedInject constructor(
         const val KEY_QUALITY = "quality"
         const val KEY_PROGRESS = "progress"
         const val KEY_ERROR = "error"
+
+        private const val CHANNEL_ID = "downloads_channel"
+        private const val CHANNEL_NAME = "Descargas"
 
         internal fun extensionForAudio(contentType: String?, url: String): String {
             val mimeType = contentType
@@ -75,6 +79,13 @@ class DownloadWorker @AssistedInject constructor(
         val songId = inputData.getString(KEY_SONG_ID) ?: return Result.failure()
         val track = downloadDao.getBySongId(songId) ?: return Result.failure()
 
+        // Establish foreground notification for WorkManager (targetSdk 34 compliant)
+        try {
+            setForeground(createForegroundInfo(track.title, 0))
+        } catch (e: Exception) {
+            Log.w(TAG, "DownloadWorker: Could not set foreground service: ${e.message}")
+        }
+
         // Pre-eviction: make room before starting a new download
         try {
             offlineManager.evictIfNeeded()
@@ -88,9 +99,12 @@ class DownloadWorker @AssistedInject constructor(
         } catch (e: Exception) {
             Log.e(TAG, "DownloadWorker: Failed to resolve stream for $songId: ${e.message}")
             downloadDao.updateProgress(songId, "FAILED", track.progress)
-            return if (runAttemptCount < 3) Result.retry() else Result.failure(
-                workDataOf(KEY_ERROR to "No se pudo resolver la URL de descarga")
-            )
+            if (runAttemptCount < 3) {
+                return Result.retry()
+            } else {
+                showFailureNotification(track.title, "No se pudo resolver la URL de descarga")
+                return Result.failure(workDataOf(KEY_ERROR to "No se pudo resolver la URL de descarga"))
+            }
         }
 
         val targetUrl = (streamResult as? Resource.Success)?.data
@@ -98,8 +112,11 @@ class DownloadWorker @AssistedInject constructor(
             val reason = (streamResult as? Resource.Error)?.message ?: "Stream no disponible"
             Log.e(TAG, "DownloadWorker: No audio stream found for $songId")
             downloadDao.updateProgress(songId, "FAILED", 0)
-            return if (runAttemptCount < 3) Result.retry() else {
-                Result.failure(workDataOf(KEY_ERROR to reason))
+            if (runAttemptCount < 3) {
+                return Result.retry()
+            } else {
+                showFailureNotification(track.title, reason)
+                return Result.failure(workDataOf(KEY_ERROR to reason))
             }
         }
 
@@ -111,7 +128,7 @@ class DownloadWorker @AssistedInject constructor(
         var completedFile: File? = null
 
         return try {
-            val downloaded = downloadFile(targetUrl, partialFile, songId)
+            val downloaded = downloadFile(targetUrl, partialFile, songId, track.title)
 
             // 3. Integrity check — file must be non-empty and match Content-Length when present.
             if (partialFile.length() == 0L ||
@@ -122,6 +139,7 @@ class DownloadWorker @AssistedInject constructor(
                 downloadDao.insertRaw(track.copy(
                     status = "FAILED", errorMessage = "Descarga incompleta", retryCount = runAttemptCount
                 ))
+                showFailureNotification(track.title, "Descarga incompleta")
                 return Result.failure(workDataOf(KEY_ERROR to "Descarga incompleta"))
             }
 
@@ -156,12 +174,12 @@ class DownloadWorker @AssistedInject constructor(
             Log.e(TAG, "DownloadWorker: IOException for '${track.title}': ${e.message}")
 
             if (isNoSpace) {
-                // Don't retry — storage is full, fail immediately with actionable message
                 downloadDao.insertRaw(track.copy(
                     status = "FAILED",
                     errorMessage = "Almacenamiento insuficiente — libera espacio e intenta de nuevo",
                     retryCount = runAttemptCount
                 ))
+                showFailureNotification(track.title, "Almacenamiento insuficiente")
                 Result.failure(workDataOf(KEY_ERROR to "Almacenamiento insuficiente"))
             } else if (runAttemptCount < 3) {
                 downloadDao.updateProgress(songId, "QUEUED", 0)
@@ -172,6 +190,7 @@ class DownloadWorker @AssistedInject constructor(
                     errorMessage = e.message,
                     retryCount = runAttemptCount
                 ))
+                showFailureNotification(track.title, "Error al descargar")
                 Result.failure(workDataOf(KEY_ERROR to (e.message ?: "Error de descarga")))
             }
         } catch (e: Exception) {
@@ -181,14 +200,13 @@ class DownloadWorker @AssistedInject constructor(
             downloadDao.insertRaw(track.copy(
                 status = "FAILED", errorMessage = e.message, retryCount = runAttemptCount
             ))
+            showFailureNotification(track.title, "Error inesperado")
             Result.failure(workDataOf(KEY_ERROR to (e.message ?: "Error inesperado")))
         }
     }
 
-    /** Downloads [url] to [file], tracks progress and reports the verified container type. */
-    private suspend fun downloadFile(url: String, file: File, songId: String): DownloadResult {
-        // FIX: rechazar URLs inseguras antes de abrir conexión
-        // Android NSC bloquearía http:// de todas formas, pero esto da un error claro en el log
+    /** Downloads [url] to [file], tracks progress and updates foreground notification. */
+    private suspend fun downloadFile(url: String, file: File, songId: String, songTitle: String): DownloadResult {
         if (!url.startsWith("https://")) {
             throw IOException(
                 "[DownloadWorker] URL de stream insegura o inválida para $songId. " +
@@ -221,6 +239,9 @@ class DownloadWorker @AssistedInject constructor(
                             lastReportedPct = pct
                             setProgress(workDataOf(KEY_PROGRESS to pct))
                             downloadDao.updateProgress(songId, "DOWNLOADING", pct)
+                            try {
+                                setForeground(createForegroundInfo(songTitle, pct))
+                            } catch (_: Exception) {}
                         }
                     }
                 }
@@ -232,5 +253,56 @@ class DownloadWorker @AssistedInject constructor(
                 contentLength = total
             )
         }
+    }
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                CHANNEL_NAME,
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "Notificaciones de progreso de descargas de música"
+            }
+            val notificationManager = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            notificationManager.createNotificationChannel(channel)
+        }
+    }
+
+    private fun createForegroundInfo(songTitle: String, progress: Int): ForegroundInfo {
+        createNotificationChannel()
+        val cancelIntent = WorkManager.getInstance(applicationContext).createCancelPendingIntent(id)
+
+        val notification = NotificationCompat.Builder(applicationContext, CHANNEL_ID)
+            .setContentTitle(songTitle)
+            .setContentText(if (progress > 0) "Descargando: $progress%" else "Iniciando descarga…")
+            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setOngoing(true)
+            .setProgress(100, progress, progress == 0)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Cancelar", cancelIntent)
+            .build()
+
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ForegroundInfo(
+                id.hashCode(),
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+            )
+        } else {
+            ForegroundInfo(id.hashCode(), notification)
+        }
+    }
+
+    private fun showFailureNotification(songTitle: String, errorMessage: String) {
+        createNotificationChannel()
+        val notification = NotificationCompat.Builder(applicationContext, CHANNEL_ID)
+            .setContentTitle("Error al descargar")
+            .setContentText("$songTitle — $errorMessage")
+            .setSmallIcon(android.R.drawable.stat_notify_error)
+            .setAutoCancel(true)
+            .build()
+
+        val notificationManager = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        notificationManager.notify(id.hashCode(), notification)
     }
 }
