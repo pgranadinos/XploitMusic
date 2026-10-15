@@ -7,7 +7,6 @@ import com.xploitmusic.app.domain.repository.QueueManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -31,10 +30,7 @@ class SettingsViewModel @Inject constructor(
 
     fun clearAllDownloads() {
         viewModelScope.launch {
-            val completed = offlineManager.getCompletedDownloads().first()
-            completed.forEach { entity ->
-                offlineManager.deleteDownload(entity.songId)
-            }
+            offlineManager.clearAllDownloads()
         }
     }
 
