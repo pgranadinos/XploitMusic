@@ -47,6 +47,14 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="app" android:host="xploitmusic" android:pathPrefix="/spotify-import" />
             </intent-filter>
+
+            <!-- Deep link for Spotify OAuth PKCE callback -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="xploitmusic" android:host="spotify-callback" />
+            </intent-filter>
         </activity>
 
         <!-- Service for Media3 -->

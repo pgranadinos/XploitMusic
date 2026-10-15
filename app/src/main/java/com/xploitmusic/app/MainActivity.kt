@@ -29,8 +29,13 @@ import com.xploitmusic.app.core.theme.XploitMusicTheme
 import com.xploitmusic.app.presentation.components.MiniPlayerBar
 import dagger.hilt.android.AndroidEntryPoint
 
+import javax.inject.Inject
+
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+
+    @Inject
+    lateinit var spotifyRepository: com.xploitmusic.app.domain.repository.SpotifyRepository
 
     // Mutable state observed by Compose to trigger navigation to player
     private var _openPlayerState = mutableStateOf(false)
@@ -38,6 +43,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        handleIntent(intent)
         _openPlayerState.value = isPlayerIntent(intent)
         _openSpotifyImportState.value = isSpotifyImportIntent(intent)
         setContent {
@@ -61,11 +67,19 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        handleIntent(intent)
         if (isSpotifyImportIntent(intent)) {
             _openSpotifyImportState.value = true
         }
         if (isPlayerIntent(intent)) {
             _openPlayerState.value = true
+        }
+    }
+
+    private fun handleIntent(intent: Intent?) {
+        val uri = intent?.data ?: return
+        if (spotifyRepository.handleOAuthDeepLink(uri)) {
+            _openSpotifyImportState.value = true
         }
     }
 

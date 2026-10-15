@@ -2,7 +2,6 @@ package com.xploitmusic.app.data.repository
 
 import android.net.Uri
 import android.util.Log
-import com.xploitmusic.app.core.network.SpotifyOAuthLoopbackServer
 import com.xploitmusic.app.data.local.SpotifyConfigurationStore
 import com.xploitmusic.app.data.local.SpotifyOAuthSessionStore
 import com.xploitmusic.app.data.local.dao.SpotifyTokenDao
@@ -15,6 +14,8 @@ import com.xploitmusic.app.data.remote.SpotifyUserProfileDto
 import com.xploitmusic.app.domain.repository.SpotifyRepository
 import com.xploitmusic.app.domain.model.SpotifyOAuthCallback
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
@@ -32,15 +33,16 @@ class SpotifyRepositoryImpl @Inject constructor(
     private val authApi: SpotifyAuthApi,
     private val tokenDao: SpotifyTokenDao,
     private val oauthSessionStore: SpotifyOAuthSessionStore,
-    private val configurationStore: SpotifyConfigurationStore,
-    private val loopbackServer: SpotifyOAuthLoopbackServer
+    private val configurationStore: SpotifyConfigurationStore
 ) : SpotifyRepository {
 
     private val refreshMutex = Mutex()
+    private val oauthCallbackFlow = MutableSharedFlow<SpotifyOAuthCallback>(extraBufferCapacity = 1)
 
     companion object {
         private const val TAG = "SpotifyRepo"
         private const val SCOPES = "playlist-read-private playlist-read-collaborative"
+        private const val REDIRECT_URI = "xploitmusic://spotify-callback"
         /** Renovar si faltan menos de 60 segundos */
         private const val REFRESH_THRESHOLD_MS = 60_000L
 
@@ -77,7 +79,7 @@ class SpotifyRepositoryImpl @Inject constructor(
 
     override suspend fun buildAuthUrl(): Result<String> = runCatching {
         val clientId = configurationStore.requireClientId()
-        val redirectUri = loopbackServer.start().getOrThrow()
+        val redirectUri = REDIRECT_URI
         val verifier = generateCodeVerifier()
         val challenge = generateCodeChallenge(verifier)
         val state = generateState()
@@ -98,7 +100,26 @@ class SpotifyRepositoryImpl @Inject constructor(
             .toString()
     }
 
-    override fun observeOAuthCallbacks(): Flow<SpotifyOAuthCallback> = loopbackServer.callbacks
+    override fun observeOAuthCallbacks(): Flow<SpotifyOAuthCallback> = oauthCallbackFlow.asSharedFlow()
+
+    override fun handleOAuthDeepLink(uri: Uri): Boolean {
+        if (uri.scheme != "xploitmusic" || uri.host != "spotify-callback") {
+            return false
+        }
+        val rawError = uri.getQueryParameter("error")
+        val friendlyError = when {
+            rawError == "access_denied" -> "Autorización cancelada por el usuario"
+            !rawError.isNullOrBlank() -> "Spotify rechazó la autorización ($rawError)"
+            else -> null
+        }
+        val callback = SpotifyOAuthCallback(
+            code = uri.getQueryParameter("code"),
+            state = uri.getQueryParameter("state"),
+            error = friendlyError
+        )
+        oauthCallbackFlow.tryEmit(callback)
+        return true
+    }
 
     override suspend fun exchangeCode(code: String, state: String): Result<Unit> {
         return try {
@@ -262,7 +283,6 @@ class SpotifyRepositoryImpl @Inject constructor(
     }
 
     override suspend fun logout() {
-        loopbackServer.stop()
         oauthSessionStore.clear()
         tokenDao.deleteToken()
         Log.d(TAG, "Logged out")

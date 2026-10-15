@@ -97,7 +97,7 @@ class ImportPlaylistViewModel @Inject constructor(
     private fun handleOAuthCallback(callback: SpotifyOAuthCallback) {
         val error = callback.error
         if (error != null) {
-            showAuthError("Spotify rechazó la autorización: $error")
+            showAuthError(error)
             return
         }
 

@@ -21,8 +21,11 @@ interface SpotifyRepository {
      */
     suspend fun buildAuthUrl(): Result<String>
 
-    /** Respuesta recibida por el servidor loopback local del teléfono. */
+    /** Respuesta recibida por el deep link personalizado. */
     fun observeOAuthCallbacks(): Flow<SpotifyOAuthCallback>
+
+    /** Procesa una Uri recibida por Intent deep-link y emite el callback si corresponde. */
+    fun handleOAuthDeepLink(uri: android.net.Uri): Boolean
 
     /**
      * Intercambia el authorization code por access_token + refresh_token.

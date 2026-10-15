@@ -2,7 +2,6 @@ package com.xploitmusic.app.core.di
 
 import com.xploitmusic.app.data.local.SpotifyOAuthSessionStore
 import com.xploitmusic.app.data.local.SpotifyConfigurationStore
-import com.xploitmusic.app.core.network.SpotifyOAuthLoopbackServer
 import com.xploitmusic.app.data.remote.SpotifyApi
 import com.xploitmusic.app.data.remote.SpotifyAuthApi
 import com.xploitmusic.app.data.local.dao.SpotifyTokenDao
@@ -29,16 +28,14 @@ object SpotifyModule {
         authApi: SpotifyAuthApi,
         tokenDao: SpotifyTokenDao,
         oauthSessionStore: SpotifyOAuthSessionStore,
-        configurationStore: SpotifyConfigurationStore,
-        loopbackServer: SpotifyOAuthLoopbackServer
+        configurationStore: SpotifyConfigurationStore
     ): SpotifyRepository {
         return SpotifyRepositoryImpl(
             api,
             authApi,
             tokenDao,
             oauthSessionStore,
-            configurationStore,
-            loopbackServer
+            configurationStore
         )
     }
 
