@@ -5,11 +5,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.common.Player
 import com.xploitmusic.app.core.util.Resource
-import com.xploitmusic.app.data.local.dao.PlaylistDao
-import com.xploitmusic.app.data.local.dao.SongDao
 import com.xploitmusic.app.data.local.entity.PlaylistEntity
-import com.xploitmusic.app.data.local.entity.PlaylistSongCrossRef
-import com.xploitmusic.app.data.local.entity.SongEntity
+import com.xploitmusic.app.domain.repository.PlaylistRepository
 import com.xploitmusic.app.data.local.entity.DownloadedTrackEntity
 import com.xploitmusic.app.data.repository.OfflineManager
 import com.xploitmusic.app.data.service.SkipHandler
@@ -51,8 +48,7 @@ class PlayerViewModel @Inject constructor(
     private val favoritesRepository: FavoritesRepository,
     private val streamRepository: StreamRepository,
     private val skipHandler: SkipHandler,
-    private val playlistDao: PlaylistDao,
-    private val songDao: SongDao,
+    private val playlistRepository: PlaylistRepository,
     private val queueManager: QueueManager,
     private val offlineManager: OfflineManager,
     private val analyticsLogger: XploitAnalyticsLogger,
@@ -163,7 +159,7 @@ class PlayerViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.Lazily, 0L)
 
     // All playlists for "Add to Playlist" sheet
-    val playlists: StateFlow<List<PlaylistEntity>> = playlistDao.getAllPlaylists()
+    val playlists: StateFlow<List<PlaylistEntity>> = playlistRepository.getAllPlaylists()
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     init {
@@ -1033,20 +1029,7 @@ class PlayerViewModel @Inject constructor(
         val song = _currentSong.value ?: return
         viewModelScope.launch {
             try {
-                // Ensure song exists in DB
-                songDao.upsertNetworkSong(
-                    SongEntity(
-                        id = song.id,
-                        title = song.title,
-                        artist = song.artist,
-                        thumbnailUrl = song.thumbnailUrl,
-                        durationSeconds = song.durationSeconds,
-                        streamUrl = song.streamUrl
-                    )
-                )
-                playlistDao.addSongToPlaylist(
-                    PlaylistSongCrossRef(playlistId = playlistId, songId = song.id)
-                )
+                playlistRepository.addSongToPlaylist(playlistId, song)
                 Log.d(TAG, "PlayerVM: Added '${song.title}' to playlist $playlistId")
             } catch (e: Exception) {
                 Log.e(TAG, "PlayerVM: Error adding song to playlist: ${e.message}", e)
@@ -1061,8 +1044,7 @@ class PlayerViewModel @Inject constructor(
         if (name.isBlank()) return
         viewModelScope.launch {
             try {
-                val entity = PlaylistEntity(name = name.trim())
-                val id = playlistDao.createPlaylist(entity)
+                val id = playlistRepository.createPlaylist(name.trim())
                 addCurrentSongToPlaylist(id)
             } catch (e: Exception) {
                 Log.e(TAG, "PlayerVM: Error creating playlist: ${e.message}", e)

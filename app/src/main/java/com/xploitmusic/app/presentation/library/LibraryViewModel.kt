@@ -3,13 +3,10 @@ package com.xploitmusic.app.presentation.library
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.xploitmusic.app.data.local.dao.PlaylistDao
-import com.xploitmusic.app.data.local.dao.SongDao
-import com.xploitmusic.app.data.local.entity.PlaylistSongCrossRef
 import com.xploitmusic.app.data.local.entity.PlaylistWithSongs
-import com.xploitmusic.app.data.local.entity.SongEntity
 import com.xploitmusic.app.domain.model.Song
 import com.xploitmusic.app.domain.repository.FavoritesRepository
+import com.xploitmusic.app.domain.repository.PlaylistRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -17,14 +14,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
-import com.xploitmusic.app.data.local.entity.PlaylistEntity
 import kotlinx.coroutines.flow.stateIn
 import javax.inject.Inject
 
 @HiltViewModel
 class LibraryViewModel @Inject constructor(
-    private val playlistDao: PlaylistDao,
-    private val songDao: SongDao,
+    private val playlistRepository: PlaylistRepository,
     private val favoritesRepository: FavoritesRepository
 ) : ViewModel() {
 
@@ -34,7 +29,7 @@ class LibraryViewModel @Inject constructor(
 
     // ── Playlists (with songs pre-loaded, ordered by position) ──
     val allPlaylistsWithSongs: StateFlow<List<PlaylistWithSongs>> =
-        playlistDao.getAllPlaylistsWithSongs()
+        playlistRepository.getAllPlaylistsWithSongs()
             .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     private val _selectedPlaylist = MutableStateFlow<PlaylistWithSongs?>(null)
@@ -63,8 +58,7 @@ class LibraryViewModel @Inject constructor(
     fun createPlaylist(name: String) {
         if (name.isBlank()) return
         viewModelScope.launch {
-            val entity = PlaylistEntity(name = name.trim())
-            val id = playlistDao.createPlaylist(entity)
+            val id = playlistRepository.createPlaylist(name.trim())
             Log.d(TAG, "LibraryVM: Created playlist '$name' with id=$id")
         }
         _showCreateDialog.value = false
@@ -72,7 +66,7 @@ class LibraryViewModel @Inject constructor(
 
     fun deletePlaylist(playlistId: Long) {
         viewModelScope.launch {
-            playlistDao.deletePlaylist(playlistId)
+            playlistRepository.deletePlaylist(playlistId)
             if (_selectedPlaylist.value?.playlist?.playlistId == playlistId) {
                 clearSelection()
             }
@@ -83,7 +77,7 @@ class LibraryViewModel @Inject constructor(
     fun selectPlaylist(playlistId: Long) {
         selectionJob?.cancel()
         selectionJob = viewModelScope.launch {
-            playlistDao.getPlaylistWithSongs(playlistId).collect { pws ->
+            playlistRepository.getPlaylistWithSongs(playlistId).collect { pws ->
                 _selectedPlaylist.value = pws
             }
         }
@@ -96,40 +90,26 @@ class LibraryViewModel @Inject constructor(
     }
 
     suspend fun renamePlaylist(playlistId: Long, name: String): Boolean {
-        val trimmedName = name.trim()
-        if (trimmedName.isEmpty()) return false
-        return playlistDao.renamePlaylist(playlistId, trimmedName) == 1
+        return playlistRepository.renamePlaylist(playlistId, name)
     }
 
     fun addSongToPlaylist(playlistId: Long, song: Song) {
         viewModelScope.launch {
-            songDao.upsertNetworkSong(
-                SongEntity(
-                    id = song.id,
-                    title = song.title,
-                    artist = song.artist,
-                    thumbnailUrl = song.thumbnailUrl,
-                    durationSeconds = song.durationSeconds,
-                    streamUrl = song.streamUrl
-                )
-            )
-            playlistDao.addSongToPlaylist(
-                PlaylistSongCrossRef(playlistId = playlistId, songId = song.id)
-            )
+            playlistRepository.addSongToPlaylist(playlistId, song)
             Log.d(TAG, "LibraryVM: Added '${song.title}' to playlist $playlistId")
         }
     }
 
     fun removeSongFromPlaylist(playlistId: Long, songId: String) {
         viewModelScope.launch {
-            playlistDao.removeSongFromPlaylist(playlistId, songId)
+            playlistRepository.removeSongFromPlaylist(playlistId, songId)
             Log.d(TAG, "LibraryVM: Removed song $songId from playlist $playlistId")
         }
     }
 
     fun reorderPlaylist(playlistId: Long, fromPosition: Int, toPosition: Int) {
         viewModelScope.launch {
-            playlistDao.moveSong(playlistId, fromPosition, toPosition)
+            playlistRepository.moveSongInPlaylist(playlistId, fromPosition, toPosition)
             Log.d(TAG, "LibraryVM: Reordered playlist $playlistId from $fromPosition to $toPosition")
         }
     }

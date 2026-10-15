@@ -2,8 +2,6 @@ package com.xploitmusic.app.presentation.player
 
 import com.xploitmusic.app.core.util.PlaybackLogManager
 import com.xploitmusic.app.core.util.Resource
-import com.xploitmusic.app.data.local.dao.PlaylistDao
-import com.xploitmusic.app.data.local.dao.SongDao
 import com.xploitmusic.app.data.repository.OfflineManager
 import com.xploitmusic.app.data.repository.QueueManagerImpl
 import com.xploitmusic.app.data.service.SkipHandler
@@ -38,8 +36,6 @@ class PlayerViewModelRetryTest {
     private lateinit var mockFavRepo: FavoritesRepository
     private lateinit var mockStreamRepo: StreamRepository
     private lateinit var mockSkipHandler: SkipHandler
-    private lateinit var mockPlaylistDao: PlaylistDao
-    private lateinit var mockSongDao: SongDao
     private lateinit var mockOfflineManager: OfflineManager
     private lateinit var queueManager: QueueManagerImpl
     private lateinit var mockPlaybackLogManager: PlaybackLogManager
@@ -66,8 +62,7 @@ class PlayerViewModelRetryTest {
         mockFavRepo = mockk(relaxed = true)
         mockStreamRepo = mockk(relaxed = true)
         mockSkipHandler = mockk(relaxed = true)
-        mockPlaylistDao = mockk(relaxed = true)
-        mockSongDao = mockk(relaxed = true)
+        val mockPlaylistRepo: com.xploitmusic.app.domain.repository.PlaylistRepository = mockk(relaxed = true)
         queueManager = QueueManagerImpl()
 
         mockOfflineManager = mockk(relaxed = true)
@@ -83,8 +78,7 @@ class PlayerViewModelRetryTest {
             favoritesRepository = mockFavRepo,
             streamRepository = mockStreamRepo,
             skipHandler = mockSkipHandler,
-            playlistDao = mockPlaylistDao,
-            songDao = mockSongDao,
+            playlistRepository = mockPlaylistRepo,
             queueManager = queueManager,
             offlineManager = mockOfflineManager,
             analyticsLogger = mockAnalyticsLogger,

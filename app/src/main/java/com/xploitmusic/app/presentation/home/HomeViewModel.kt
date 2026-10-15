@@ -4,7 +4,8 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.xploitmusic.app.core.util.Resource
-import com.xploitmusic.app.data.local.dao.SearchHistoryDao
+import com.xploitmusic.app.domain.repository.SearchHistoryRepository
+import com.xploitmusic.app.domain.repository.PlayHistoryRepository
 import com.xploitmusic.app.data.local.entity.SearchHistoryEntity
 import com.xploitmusic.app.domain.model.Song
 import com.xploitmusic.app.domain.repository.FavoritesRepository
@@ -36,7 +37,6 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import javax.inject.Inject
 
-import com.xploitmusic.app.data.local.dao.PlayHistoryDao
 import kotlinx.coroutines.flow.update
 import com.xploitmusic.app.domain.recommendation.SongRecommendationSelector
 @OptIn(FlowPreview::class)
@@ -45,8 +45,8 @@ class HomeViewModel @Inject constructor(
     private val searchSongsUseCase: SearchSongsUseCase,
     private val favoritesRepository: FavoritesRepository,
     private val streamRepository: StreamRepository,
-    private val searchHistoryDao: SearchHistoryDao,
-    private val playHistoryDao: PlayHistoryDao
+    private val searchHistoryRepository: SearchHistoryRepository,
+    private val playHistoryRepository: PlayHistoryRepository
 ) : ViewModel() {
 
     companion object {
@@ -76,11 +76,11 @@ class HomeViewModel @Inject constructor(
     val suggestions = _suggestions.asStateFlow()
 
     // Recent searches (for initial dropdown when search bar is focused)
-    val recentSearches = searchHistoryDao.getRecentSearches()
+    val recentSearches = searchHistoryRepository.getRecentSearches()
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     // Convenience: recent search strings for simple UI lists
-    val recentSearchStrings: StateFlow<List<String>> = searchHistoryDao.getRecentSearches()
+    val recentSearchStrings: StateFlow<List<String>> = searchHistoryRepository.getRecentSearches()
         .map { entities -> entities.map { it.displayQuery } }
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
@@ -134,7 +134,7 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 val thirtyDaysAgo = System.currentTimeMillis() - 30L * 24 * 60 * 60 * 1000
-                searchHistoryDao.deleteOlderThan(thirtyDaysAgo)
+                searchHistoryRepository.deleteOlderThan(thirtyDaysAgo)
             } catch (e: Exception) {
                 Log.w(TAG, "HomeVM: History cleanup failed: ${e.message}")
             }
@@ -161,7 +161,7 @@ class HomeViewModel @Inject constructor(
             is SearchAction.DeleteHistory -> {
                 viewModelScope.launch {
                     try {
-                        searchHistoryDao.delete(action.query)
+                        searchHistoryRepository.delete(action.query)
                     } catch (e: Exception) {
                         Log.w(TAG, "HomeVM: Delete history failed: ${e.message}")
                     }
@@ -170,7 +170,7 @@ class HomeViewModel @Inject constructor(
             is SearchAction.ClearHistory -> {
                 viewModelScope.launch {
                     try {
-                        searchHistoryDao.clearAll()
+                        searchHistoryRepository.clearAll()
                     } catch (e: Exception) {
                         Log.w(TAG, "HomeVM: Clear history failed: ${e.message}")
                     }
@@ -202,7 +202,7 @@ class HomeViewModel @Inject constructor(
 
             // Source 1: Local history (instant)
             try {
-                val historyMatches = searchHistoryDao.getMatchingHistory(query)
+                val historyMatches = searchHistoryRepository.getMatchingHistory(query)
                 merged.addAll(
                     historyMatches.take(3).map { SearchSuggestion.HistoryItem(it) }
                 )
@@ -338,7 +338,7 @@ class HomeViewModel @Inject constructor(
         val trimmed = query.trim()
         if (trimmed.length < 3) return // Don't save very short queries
         try {
-            searchHistoryDao.upsert(
+            searchHistoryRepository.upsert(
                 SearchHistoryEntity(
                     query = trimmed.lowercase(),
                     displayQuery = trimmed,
@@ -356,7 +356,7 @@ class HomeViewModel @Inject constructor(
         if (query.isBlank()) return
         viewModelScope.launch {
             try {
-                searchHistoryDao.upsert(
+                searchHistoryRepository.upsert(
                     SearchHistoryEntity(
                         query = query.lowercase().trim(),
                         displayQuery = query.trim(),
@@ -432,7 +432,7 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch {
             _homeUiState.update { it.copy(jumpBackIn = SectionState.Loading) }
             try {
-                val history = playHistoryDao.getRecentPlayHistory(5).first()
+                val history = playHistoryRepository.getRecentPlayHistory(5).first()
                 if (history.isNotEmpty()) {
                     val items = history.map { entity ->
                         HistoryContext(

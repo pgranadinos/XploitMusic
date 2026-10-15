@@ -50,8 +50,6 @@ class PlayerViewModelSkipRaceTest {
     private lateinit var mockFavRepo: FavoritesRepository
     private lateinit var mockStreamRepo: StreamRepository
     private lateinit var mockSkipHandler: SkipHandler
-    private lateinit var mockPlaylistDao: PlaylistDao
-    private lateinit var mockSongDao: SongDao
     private lateinit var mockOfflineManager: com.xploitmusic.app.data.repository.OfflineManager
     private lateinit var queueManager: QueueManagerImpl
 
@@ -77,8 +75,7 @@ class PlayerViewModelSkipRaceTest {
         mockFavRepo = mockk(relaxed = true)
         mockStreamRepo = mockk(relaxed = true)
         mockSkipHandler = mockk(relaxed = true)
-        mockPlaylistDao = mockk(relaxed = true)
-        mockSongDao = mockk(relaxed = true)
+        val mockPlaylistRepo: com.xploitmusic.app.domain.repository.PlaylistRepository = mockk(relaxed = true)
         queueManager = QueueManagerImpl()
 
         mockOfflineManager = mockk(relaxed = true)
@@ -93,8 +90,7 @@ class PlayerViewModelSkipRaceTest {
             favoritesRepository = mockFavRepo,
             streamRepository = mockStreamRepo,
             skipHandler = mockSkipHandler,
-            playlistDao = mockPlaylistDao,
-            songDao = mockSongDao,
+            playlistRepository = mockPlaylistRepo,
             queueManager = queueManager,
             offlineManager = mockOfflineManager,
             analyticsLogger = mockAnalyticsLogger,
