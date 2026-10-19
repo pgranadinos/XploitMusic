@@ -23,6 +23,15 @@ class SpotifyOAuthSessionStore @Inject constructor(
             .apply()
     }
 
+    fun hasActiveSession(returnedState: String?): Boolean {
+        if (returnedState.isNullOrBlank()) return false
+        val expectedState = preferences.getString(KEY_STATE, null) ?: return false
+        return MessageDigest.isEqual(
+            expectedState.toByteArray(Charsets.UTF_8),
+            returnedState.toByteArray(Charsets.UTF_8)
+        )
+    }
+
     fun consume(returnedState: String): Session? {
         val verifier = preferences.getString(KEY_VERIFIER, null)
         val expectedState = preferences.getString(KEY_STATE, null)

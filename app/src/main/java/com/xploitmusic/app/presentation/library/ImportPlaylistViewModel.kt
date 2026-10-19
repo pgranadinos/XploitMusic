@@ -146,6 +146,21 @@ class ImportPlaylistViewModel @Inject constructor(
 
     fun startImport(playlist: SpotifyPlaylistDto) {
         if (importJob?.isActive == true) return
+        val ownerId = playlist.owner?.id
+        if (ownerId.isNullOrBlank()) {
+            retryAction = RetryAction.PLAYLISTS
+            _uiState.value = SpotifyImportState.Error("No se puede determinar el propietario de la playlist.")
+            return
+        }
+        val currentUserId = userProfile.value?.spotifyUserId.orEmpty()
+        val isOwner = ownerId == currentUserId
+        val isCollaborative = playlist.collaborative
+        if (!isOwner && !isCollaborative) {
+            retryAction = RetryAction.PLAYLISTS
+            _uiState.value = SpotifyImportState.Error("Solo se pueden importar playlists propias o colaborativas.")
+            return
+        }
+
         importJob = viewModelScope.launch {
             importUseCase.execute(playlist).collectLatest { progress ->
                 val error = progress.errorMessage

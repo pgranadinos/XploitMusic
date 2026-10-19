@@ -39,9 +39,6 @@ class SpotifyConfigurationStore @Inject constructor(
         ?: throw IllegalStateException("Introduce el Client ID de Spotify")
 
     companion object {
-        /** Se registra una vez en Spotify Dashboard; el puerto se asigna dinámicamente. */
-        const val REGISTERED_REDIRECT_URI = "http://127.0.0.1/spotify/callback"
-
         private const val PREFERENCES = "spotify_configuration"
         private const val KEY_CLIENT_ID = "client_id"
         private val CLIENT_ID_PATTERN = Regex("^[A-Za-z0-9]{16,128}$")

@@ -33,13 +33,19 @@ data class SpotifyPagedPlaylistsDto(
     @SerializedName("total")  val total: Int
 )
 
+data class SpotifyOwnerDto(
+    @SerializedName("id") val id: String?
+)
+
 data class SpotifyPlaylistDto(
-    @SerializedName("id")          val id: String,
-    @SerializedName("name")        val name: String,
-    @SerializedName("description") val description: String?,
-    @SerializedName("images")      val images: List<SpotifyImageDto>?,
-    @SerializedName("items")       val itemsSummary: SpotifyTracksSummaryDto? = null,
-    @SerializedName("tracks")      val tracks: SpotifyTracksSummaryDto? = null
+    @SerializedName("id")            val id: String,
+    @SerializedName("name")          val name: String,
+    @SerializedName("description")   val description: String?,
+    @SerializedName("images")        val images: List<SpotifyImageDto>?,
+    @SerializedName("collaborative") val collaborative: Boolean = false,
+    @SerializedName("owner")         val owner: SpotifyOwnerDto? = null,
+    @SerializedName("items")         val itemsSummary: SpotifyTracksSummaryDto? = null,
+    @SerializedName("tracks")        val tracks: SpotifyTracksSummaryDto? = null
 ) {
     /** `items` reemplazó a `tracks`; se conserva el fallback durante la migración. */
     val totalItems: Int
@@ -50,11 +56,21 @@ data class SpotifyTracksSummaryDto(
     @SerializedName("total") val total: Int
 )
 
-// ─── Tracks ────────────────────────────────────────────────────────────────────
+// ─── Tracks & Search ────────────────────────────────────────────────────────────
 
 data class SpotifyPagedTracksDto(
     @SerializedName("items") val items: List<SpotifyPlaylistTrackDto>,
     @SerializedName("next")  val next: String?
+)
+
+data class SpotifyPagedSearchDto(
+    @SerializedName("tracks") val tracks: SpotifyPagedTracksSearchDto?
+)
+
+data class SpotifyPagedTracksSearchDto(
+    @SerializedName("items")  val items: List<SpotifyTrackDto>,
+    @SerializedName("total")  val total: Int,
+    @SerializedName("next")   val next: String?
 )
 
 data class SpotifyPlaylistTrackDto(

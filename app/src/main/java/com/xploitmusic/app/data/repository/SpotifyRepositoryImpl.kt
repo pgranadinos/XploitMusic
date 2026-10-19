@@ -13,10 +13,10 @@ import com.xploitmusic.app.data.remote.SpotifyTrackDto
 import com.xploitmusic.app.data.remote.SpotifyUserProfileDto
 import com.xploitmusic.app.domain.repository.SpotifyRepository
 import com.xploitmusic.app.domain.model.SpotifyOAuthCallback
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -37,7 +37,8 @@ class SpotifyRepositoryImpl @Inject constructor(
 ) : SpotifyRepository {
 
     private val refreshMutex = Mutex()
-    private val oauthCallbackFlow = MutableSharedFlow<SpotifyOAuthCallback>(replay = 1, extraBufferCapacity = 1)
+    // Canal que consume el callback una sola vez (sin replayer a pantallas reabiertas)
+    private val oauthCallbackChannel = Channel<SpotifyOAuthCallback>(Channel.BUFFERED)
 
     companion object {
         private const val TAG = "SpotifyRepo"
@@ -100,12 +101,18 @@ class SpotifyRepositoryImpl @Inject constructor(
             .toString()
     }
 
-    override fun observeOAuthCallbacks(): Flow<SpotifyOAuthCallback> = oauthCallbackFlow.asSharedFlow()
+    override fun observeOAuthCallbacks(): Flow<SpotifyOAuthCallback> = oauthCallbackChannel.receiveAsFlow()
 
     override fun handleOAuthDeepLink(uri: Uri): Boolean {
         if (uri.scheme != "xploitmusic" || uri.host != "spotify-callback") {
             return false
         }
+        val state = uri.getQueryParameter("state")
+        if (!oauthSessionStore.hasActiveSession(state)) {
+            Log.w(TAG, "Ignored OAuth callback with missing or mismatched state: $state")
+            return false
+        }
+
         val rawError = uri.getQueryParameter("error")
         val friendlyError = when {
             rawError == "access_denied" -> "Autorización cancelada por el usuario"
@@ -114,10 +121,10 @@ class SpotifyRepositoryImpl @Inject constructor(
         }
         val callback = SpotifyOAuthCallback(
             code = uri.getQueryParameter("code"),
-            state = uri.getQueryParameter("state"),
+            state = state,
             error = friendlyError
         )
-        oauthCallbackFlow.tryEmit(callback)
+        oauthCallbackChannel.trySend(callback)
         return true
     }
 
@@ -283,6 +290,22 @@ class SpotifyRepositoryImpl @Inject constructor(
             Result.success(all)
         } catch (e: Exception) {
             Log.e(TAG, "getAllPlaylistTracks failed", e)
+            Result.failure(e)
+        }
+    }
+
+    override suspend fun searchTracks(query: String, limit: Int, offset: Int): Result<List<SpotifyTrackDto>> {
+        return try {
+            val response = authenticatedCall {
+                api.searchTracks(
+                    query = query,
+                    limit = limit.coerceIn(1, 10),
+                    offset = offset
+                )
+            }
+            Result.success(response.tracks?.items ?: emptyList())
+        } catch (e: Exception) {
+            Log.e(TAG, "searchTracks failed", e)
             Result.failure(e)
         }
     }
