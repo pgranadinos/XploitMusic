@@ -51,12 +51,6 @@ interface SpotifyRepository {
      */
     suspend fun getAllPlaylistTracks(playlistId: String): Result<List<SpotifyTrackDto>>
 
-    /**
-     * Busca pistas en el catálogo de Spotify usando GET /search.
-     * Documentación oficial: https://developer.spotify.com/documentation/web-api/reference/search
-     */
-    suspend fun searchTracks(query: String, limit: Int = 10, offset: Int = 0): Result<List<SpotifyTrackDto>>
-
     /** Elimina el token de Room (logout completo) */
     suspend fun logout()
 }

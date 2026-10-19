@@ -31,16 +31,4 @@ interface SpotifyApi {
         @Query("offset") offset: Int = 0,
         @Query("fields") fields: String = "next,items(is_local,item(id,type,is_playable,name,duration_ms,artists(name),album(name,images)))"
     ): SpotifyPagedTracksDto
-
-    /**
-     * Búsqueda en el catálogo de Spotify.
-     * Documentación oficial: https://developer.spotify.com/documentation/web-api/reference/search
-     */
-    @GET("search")
-    suspend fun searchTracks(
-        @Query("q") query: String,
-        @Query("type") type: String = "track",
-        @Query("limit") limit: Int = 10,
-        @Query("offset") offset: Int = 0
-    ): SpotifyPagedSearchDto
 }

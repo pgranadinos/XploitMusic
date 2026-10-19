@@ -294,22 +294,6 @@ class SpotifyRepositoryImpl @Inject constructor(
         }
     }
 
-    override suspend fun searchTracks(query: String, limit: Int, offset: Int): Result<List<SpotifyTrackDto>> {
-        return try {
-            val response = authenticatedCall {
-                api.searchTracks(
-                    query = query,
-                    limit = limit.coerceIn(1, 10),
-                    offset = offset
-                )
-            }
-            Result.success(response.tracks?.items ?: emptyList())
-        } catch (e: Exception) {
-            Log.e(TAG, "searchTracks failed", e)
-            Result.failure(e)
-        }
-    }
-
     override suspend fun logout() {
         oauthSessionStore.clear()
         tokenDao.deleteToken()
