@@ -49,7 +49,6 @@ fun LibraryScreen(
     onNavigateToSpotifyImport: () -> Unit = {},
     onNavigateToDownloads: () -> Unit = {},
     onNavigateToLocal: () -> Unit = {},
-    onNavigateToSettings: () -> Unit = {},
     viewModel: LibraryViewModel = hiltViewModel()
 ) {
     val allPlaylistsWithSongs by viewModel.allPlaylistsWithSongs.collectAsState()
@@ -120,19 +119,6 @@ fun LibraryScreen(
                         }
                     },
                     actions = {
-                        IconButton(
-                            onClick = onNavigateToSettings,
-                            modifier = Modifier
-                                .padding(end = 4.dp)
-                                .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-                        ) {
-                            Icon(
-                                Icons.Default.Settings,
-                                contentDescription = "Ajustes",
-                                tint = MaterialTheme.colorScheme.onSurface
-                            )
-                        }
                         if (selectedTab == LibraryTab.PLAYLISTS) {
                             IconButton(
                                 onClick = onNavigateToSpotifyImport,

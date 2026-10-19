@@ -246,9 +246,6 @@ fun XploitAppNavigation(
                     onSongClick = { song, playlist ->
                         playerViewModel.playSong(song, playlist)
                         navController.navigate("player")
-                    },
-                    onNavigateToSettings = {
-                        navController.navigate("settings")
                     }
                 )
             }
@@ -274,15 +271,7 @@ fun XploitAppNavigation(
                     },
                     onNavigateToLocal = {
                         navController.navigate("local")
-                    },
-                    onNavigateToSettings = {
-                        navController.navigate("settings")
                     }
-                )
-            }
-            composable("settings") {
-                com.xploitmusic.app.presentation.settings.SettingsScreen(
-                    onNavigateBack = { navController.popBackStack() }
                 )
             }
             composable("spotifyImport") {

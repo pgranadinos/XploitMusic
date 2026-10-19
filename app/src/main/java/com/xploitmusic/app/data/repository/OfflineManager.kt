@@ -22,7 +22,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import java.io.File
@@ -139,30 +138,6 @@ class OfflineManager @Inject constructor(
         entity.filePath?.let { path -> File(path).delete() }
         downloadDao.delete(songId)
         Log.d(TAG, "OfflineManager: Deleted download for '${entity.title}'")
-    }
-
-    suspend fun clearAllDownloads() {
-        val all = downloadDao.getAll().first()
-        val downloadDir = File(context.filesDir, "downloads")
-
-        all.forEach { entity ->
-            if (entity.status == "QUEUED" || entity.status == "DOWNLOADING") {
-                workManager.cancelUniqueWork("download_${entity.songId}")
-            }
-            entity.filePath?.let { File(it).delete() }
-            val partial = File(downloadDir, "${entity.songId}.part")
-            if (partial.exists()) partial.delete()
-            downloadDao.delete(entity.songId)
-        }
-
-        if (downloadDir.exists()) {
-            downloadDir.listFiles()?.forEach { file ->
-                if (file.name.endsWith(".part")) {
-                    file.delete()
-                }
-            }
-        }
-        Log.d(TAG, "OfflineManager: Cleared all downloads and cancelled active workers")
     }
 
     /** Check if a song is available offline */
