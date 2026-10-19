@@ -89,16 +89,8 @@ fun SpotifyImportScreen(
                 }
                 is SpotifyImportState.Unauthenticated -> {
                     UnauthenticatedView(
-                        initialClientId = spotifyClientId,
-                        onLoginClick = viewModel::startOAuth,
-                        onOpenDashboard = {
-                            context.startActivity(
-                                Intent(
-                                    Intent.ACTION_VIEW,
-                                    Uri.parse("https://developer.spotify.com/dashboard")
-                                )
-                            )
-                        }
+                        clientId = spotifyClientId,
+                        onLoginClick = viewModel::startOAuth
                     )
                 }
                 is SpotifyImportState.LoadingPlaylists -> {
@@ -153,12 +145,9 @@ fun SpotifyImportScreen(
 
 @Composable
 private fun UnauthenticatedView(
-    initialClientId: String,
-    onLoginClick: (String) -> Unit,
-    onOpenDashboard: () -> Unit
+    clientId: String,
+    onLoginClick: () -> Unit
 ) {
-    var clientId by rememberSaveable(initialClientId) { mutableStateOf(initialClientId) }
-
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -167,7 +156,6 @@ private fun UnauthenticatedView(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        // Dummy Spotify Icon presentation (Aesthetic purposes)
         Box(
             modifier = Modifier
                 .size(100.dp)
@@ -191,38 +179,44 @@ private fun UnauthenticatedView(
         )
         Spacer(modifier = Modifier.height(12.dp))
         Text(
-            "Importa tus playlists a XploitMusic. Se usarán sus metadatos para buscar equivalencias y guardarlas localmente. Spotify no proporciona el audio de reproducción.",
+            "Importa tus playlists a XploitMusic. Se usarán sus metadatos para buscar equivalencias y guardarlas localmente en tu biblioteca.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center
         )
-        Spacer(modifier = Modifier.height(20.dp))
-        OutlinedTextField(
-            value = clientId,
-            onValueChange = { clientId = it.trim() },
-            label = { Text("Spotify Client ID") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth()
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        Text(
-            "URI para registrar: ${SpotifyConfigurationStore.REGISTERED_REDIRECT_URI}",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center
-        )
-        TextButton(onClick = onOpenDashboard) {
-            Text("Abrir Spotify Developer Dashboard")
-        }
-        Spacer(modifier = Modifier.height(32.dp))
-        Button(
-            onClick = { onLoginClick(clientId) },
-            enabled = clientId.isNotBlank(),
-            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
-            shape = RoundedCornerShape(24.dp),
-            modifier = Modifier.fillMaxWidth(0.8f).height(56.dp)
-        ) {
-            Text("Conectar con Spotify", fontWeight = FontWeight.Bold, color = Color.White)
+        Spacer(modifier = Modifier.height(24.dp))
+
+        if (clientId.isBlank()) {
+            Surface(
+                color = MaterialTheme.colorScheme.errorContainer,
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        "⚠️ Client ID no configurado",
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        "Configura 'SPOTIFY_CLIENT_ID' en tu archivo 'local.properties' para habilitar la autenticación.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                }
+            }
+        } else {
+            Button(
+                onClick = onLoginClick,
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                shape = RoundedCornerShape(24.dp),
+                modifier = Modifier
+                    .fillMaxWidth(0.85f)
+                    .height(56.dp)
+            ) {
+                Text("Conectar con Spotify", fontWeight = FontWeight.Bold, color = Color.White)
+            }
         }
     }
 }

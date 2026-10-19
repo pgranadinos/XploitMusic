@@ -79,9 +79,13 @@ class ImportPlaylistViewModel @Inject constructor(
         }
     }
 
-    fun startOAuth(clientId: String) {
-        configurationStore.saveClientId(clientId).onFailure { error ->
-            showAuthError(error.message ?: "Client ID inválido")
+    fun startOAuth(clientId: String = "") {
+        if (clientId.isNotBlank()) {
+            configurationStore.saveClientId(clientId)
+        }
+        val activeClientId = spotifyClientId.value
+        if (activeClientId.isBlank()) {
+            showAuthError("Client ID de Spotify no configurado en el proyecto")
             return
         }
         _uiState.value = SpotifyImportState.CheckingAuth

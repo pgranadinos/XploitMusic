@@ -37,7 +37,7 @@ class SpotifyRepositoryImpl @Inject constructor(
 ) : SpotifyRepository {
 
     private val refreshMutex = Mutex()
-    private val oauthCallbackFlow = MutableSharedFlow<SpotifyOAuthCallback>(extraBufferCapacity = 1)
+    private val oauthCallbackFlow = MutableSharedFlow<SpotifyOAuthCallback>(replay = 1, extraBufferCapacity = 1)
 
     companion object {
         private const val TAG = "SpotifyRepo"
@@ -194,6 +194,11 @@ class SpotifyRepositoryImpl @Inject constructor(
                     error.code() == 401 && !retriedUnauthorized -> {
                         retriedUnauthorized = true
                         refreshToken(force = true).getOrThrow()
+                    }
+                    error.code() == 403 -> {
+                        throw IllegalStateException(
+                            "Tu cuenta de Spotify no está autorizada en el Spotify Developer Dashboard de esta aplicación (Development Mode)."
+                        )
                     }
                     error.code() == 429 && !retriedRateLimit -> {
                         retriedRateLimit = true
