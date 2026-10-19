@@ -532,6 +532,7 @@ class XploitMediaService : MediaLibraryService() {
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         saveSession()
+        playbackLogManager.log("BACKGROUND", "INFO", "XploitMediaService onTaskRemoved() - App removida de recientisimas (playWhenReady=${mediaSession?.player?.playWhenReady})")
         val sessionPlayer = mediaSession?.player
         if (sessionPlayer == null || sessionPlayer.mediaItemCount == 0) {
             stopSelf()

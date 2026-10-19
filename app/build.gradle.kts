@@ -1,5 +1,6 @@
 import java.util.Properties
 import java.io.FileInputStream
+import java.util.concurrent.TimeUnit
 
 plugins {
     alias(libs.plugins.androidApplication)
@@ -19,6 +20,19 @@ val localBffBaseUrl = localProperties.getProperty(
     "http://10.0.2.2:8080/api/v1/"
 )
 val spotifyClientId = localProperties.getProperty("SPOTIFY_CLIENT_ID", "").trim()
+
+val gitCommitHash = try {
+    val process = ProcessBuilder("git", "rev-parse", "--short", "HEAD")
+        .directory(rootProject.rootDir)
+        .redirectOutput(ProcessBuilder.Redirect.PIPE)
+        .redirectError(ProcessBuilder.Redirect.PIPE)
+        .start()
+    process.waitFor(2, TimeUnit.SECONDS)
+    val output = process.inputStream.bufferedReader().readText().trim()
+    if (output.isNotBlank() && !output.contains("fatal")) output else "desconocido"
+} catch (_: Exception) {
+    "desconocido"
+}
 
 fun String.asBuildConfigString(): String =
     "\"${replace("\\", "\\\\").replace("\"", "\\\"")}\""
@@ -43,6 +57,7 @@ android {
         buildConfigField("String", "PIPED_BASE_URL", "\"https://api.piped.private.coffee/\"")
         buildConfigField("String", "LRCLIB_BASE_URL", "\"https://lrclib.net/\"")
         buildConfigField("String", "SPOTIFY_CLIENT_ID", spotifyClientId.asBuildConfigString())
+        buildConfigField("String", "GIT_COMMIT_HASH", "\"$gitCommitHash\"")
     }
 
     buildTypes {
@@ -97,6 +112,7 @@ dependencies {
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.process)
     implementation(libs.androidx.activity.compose)
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.ui)
