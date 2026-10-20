@@ -22,9 +22,9 @@ class LocalYouTubeExtractorProviderTest {
     }
 
     @Test
-    fun `getStream times out at 8 seconds when extractor is slow`() = runTest {
+    fun `getStream times out at 12 seconds when extractor exceeds timeout`() = runTest {
         coEvery { extractor.getStream("slow_video_id") } coAnswers {
-            delay(10_000L) // Takes 10s, exceeds 8s limit
+            delay(15_000L) // Takes 15s, exceeds 12s limit
             "https://slow/audio.m4a"
         }
 
@@ -35,7 +35,7 @@ class LocalYouTubeExtractorProviderTest {
     }
 
     @Test
-    fun `getStream succeeds within 8 seconds`() = runTest {
+    fun `getStream succeeds within 12 seconds`() = runTest {
         coEvery { extractor.getStream("fast_video_id") } returns "https://fast/audio.m4a"
 
         val result = provider.getStream("fast_video_id")

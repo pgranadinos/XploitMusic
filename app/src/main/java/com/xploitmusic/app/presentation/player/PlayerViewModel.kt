@@ -288,35 +288,25 @@ class PlayerViewModel @Inject constructor(
 
         // Observe network changes during active playback to invalidate old URLs and resolve fresh streams
         viewModelScope.launch {
-            val networkFlow = try { playbackLogManager.currentNetworkType } catch (_: Throwable) { null }
-            if (networkFlow != null) {
-                try {
-                    var previousNetworkType = (networkFlow.value as? String) ?: "UNKNOWN"
-                    networkFlow.collect { rawNewType ->
-                        val newNetworkType = rawNewType as? String
-                        if (newNetworkType != null) {
-                            val song = _currentSong.value
-                            val state = _playbackState.value
-                            val isPlayingOrBuffering = isPlaying.value || state is PlaybackState.Playing || state is PlaybackState.Buffering
-                            if (song != null && isPlayingOrBuffering && previousNetworkType != "UNKNOWN" && previousNetworkType != newNetworkType && newNetworkType != "Sin red") {
-                                val savedPosition = currentPosition.value
-                                val capturedGen = _playGeneration
-                                val capturedSongId = song.id
+            var previousNetworkType = playbackLogManager.currentNetworkType.value
+            playbackLogManager.currentNetworkType.collect { newNetworkType ->
+                val song = _currentSong.value
+                val state = _playbackState.value
+                val isPlayingOrBuffering = isPlaying.value || state is PlaybackState.Playing || state is PlaybackState.Buffering
+                if (song != null && isPlayingOrBuffering && previousNetworkType != "UNKNOWN" && previousNetworkType != newNetworkType && newNetworkType != "Sin red") {
+                    val savedPosition = currentPosition.value
+                    val capturedGen = _playGeneration
+                    val capturedSongId = song.id
 
-                                pendingResumePositionMs = if (savedPosition > 1000L) savedPosition else null
-                                pendingResumePositionSongId = capturedSongId
+                    pendingResumePositionMs = if (savedPosition > 1000L) savedPosition else null
+                    pendingResumePositionSongId = capturedSongId
 
-                                streamRepository.invalidateStream(capturedSongId)
-                                playbackLogManager.log("NETWORK", "WARN", "Cambio de red ($previousNetworkType -> $newNetworkType) con reproducción activa. Resolviendo stream fresco para '${song.title}' en ${savedPosition}ms")
+                    streamRepository.invalidateStream(capturedSongId)
+                    playbackLogManager.log("NETWORK", "WARN", "Cambio de red ($previousNetworkType -> $newNetworkType) con reproducción activa. Resolviendo stream fresco para '${song.title}' en ${savedPosition}ms")
 
-                                playInternal(song, capturedGen, isRetry = true)
-                            }
-                            previousNetworkType = newNetworkType
-                        }
-                    }
-                } catch (_: Throwable) {
-                    // Relaxed mocks in unit tests return dummy flows that throw on collect
+                    playInternal(song, capturedGen, isRetry = true)
                 }
+                previousNetworkType = newNetworkType
             }
         }
     }

@@ -178,6 +178,28 @@ class PlayerViewModelRetryTest {
     }
 
     @Test
+    fun `transitioning from Wi-Fi to Sin red and back to Wi-Fi resolves stream exactly once upon reconnecting`() = runTest(testDispatcher) {
+        val testSong = Song("song_reconnect", "Test Reconnect", "Artist", "", 100L, "http://audio/reconnect")
+        coEvery { mockGetStream("song_reconnect") } returns Resource.Success("http://audio/fresh")
+
+        viewModel.playSingleSong(testSong)
+        runCurrent()
+        clearMocks(mockStreamRepo, answers = false)
+
+        // 1. Wi-Fi -> Sin red (should NOT re-resolve stream while disconnected)
+        networkTypeFlow.value = "Sin red"
+        runCurrent()
+
+        verify(exactly = 0) { mockStreamRepo.invalidateStream(any()) }
+
+        // 2. Sin red -> Wi-Fi (should re-resolve stream exactly ONCE)
+        networkTypeFlow.value = "Wi-Fi"
+        runCurrent()
+
+        verify(exactly = 1) { mockStreamRepo.invalidateStream("song_reconnect") }
+    }
+
+    @Test
     fun `changing song after error does not apply saved position to new song`() = runTest(testDispatcher) {
         val song1 = Song("song_1", "Song 1", "Artist", "", 100L, "http://audio/1")
         val song2 = Song("song_2", "Song 2", "Artist", "", 100L, "http://audio/2")
