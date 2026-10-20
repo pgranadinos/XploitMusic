@@ -12,6 +12,8 @@ import com.xploitmusic.app.domain.repository.StreamRepository
 import com.xploitmusic.app.domain.usecase.GetAudioStreamUseCase
 import com.xploitmusic.app.domain.usecase.GetLyricsUseCase
 import com.xploitmusic.app.domain.usecase.ToggleFavoriteUseCase
+import com.xploitmusic.app.domain.model.PlaybackState
+import com.google.common.truth.Truth.assertThat
 import io.mockk.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -39,6 +41,7 @@ class PlayerViewModelRetryTest {
     private lateinit var mockOfflineManager: OfflineManager
     private lateinit var queueManager: QueueManagerImpl
     private lateinit var mockPlaybackLogManager: PlaybackLogManager
+    private val networkTypeFlow = MutableStateFlow("Wi-Fi")
 
     private val playerErrorFlow = MutableSharedFlow<String?>()
 
@@ -47,7 +50,7 @@ class PlayerViewModelRetryTest {
         Dispatchers.setMain(testDispatcher)
 
         mockPlayerRepo = mockk(relaxed = true) {
-            coEvery { isPlaying } returns flowOf(false)
+            coEvery { isPlaying } returns flowOf(true)
             coEvery { currentPosition } returns MutableStateFlow(5000L)
             coEvery { duration } returns flowOf(100000L)
             coEvery { trackEnded } returns flowOf(Unit)
@@ -67,8 +70,12 @@ class PlayerViewModelRetryTest {
 
         mockOfflineManager = mockk(relaxed = true)
         coEvery { mockOfflineManager.getOfflineFilePath(any()) } returns null
+
+        mockPlaybackLogManager = mockk(relaxed = true) {
+            coEvery { currentNetworkType } returns networkTypeFlow
+        }
+
         val mockAnalyticsLogger: com.xploitmusic.app.core.analytics.XploitAnalyticsLogger = mockk(relaxed = true)
-        mockPlaybackLogManager = mockk(relaxed = true)
 
         viewModel = PlayerViewModel(
             playerRepository = mockPlayerRepo,
@@ -101,12 +108,14 @@ class PlayerViewModelRetryTest {
 
         // Emit 1st HTTP 403 error
         playerErrorFlow.emit("Error del servidor de audio (HTTP 403)")
+        advanceTimeBy(1000L)
         runCurrent()
 
         verify(exactly = 1) { mockStreamRepo.invalidateStream("song_403") }
 
         // Emit 2nd HTTP 403 error
         playerErrorFlow.emit("Error del servidor de audio (HTTP 403)")
+        advanceTimeBy(2000L)
         runCurrent()
 
         verify(exactly = 2) { mockStreamRepo.invalidateStream("song_403") }
@@ -116,6 +125,56 @@ class PlayerViewModelRetryTest {
         runCurrent()
 
         verify(exactly = 2) { mockStreamRepo.invalidateStream("song_403") }
+    }
+
+    @Test
+    fun `network connection timeout and connection failed error retries up to 2 times and fails cleanly`() = runTest(testDispatcher) {
+        val testSong = Song("song_net", "Test Net", "Artist", "", 100L, "http://audio/net")
+        coEvery { mockGetStream("song_net") } returns Resource.Success("http://audio/fresh")
+
+        viewModel.playSingleSong(testSong)
+        runCurrent()
+
+        // 1st network error: IO_NETWORK_CONNECTION_FAILED
+        playerErrorFlow.emit("IO_NETWORK_CONNECTION_FAILED: Connection refused")
+        advanceTimeBy(1000L)
+        runCurrent()
+
+        verify(exactly = 1) { mockStreamRepo.invalidateStream("song_net") }
+
+        // 2nd network error: IO_NETWORK_CONNECTION_TIMEOUT
+        playerErrorFlow.emit("IO_NETWORK_CONNECTION_TIMEOUT: Timed out after 8000ms")
+        advanceTimeBy(2000L)
+        runCurrent()
+
+        verify(exactly = 2) { mockStreamRepo.invalidateStream("song_net") }
+
+        // 3rd network error: should stop retrying and emit Error state
+        playerErrorFlow.emit("IO_NETWORK_CONNECTION_FAILED: Host down")
+        runCurrent()
+
+        verify(exactly = 2) { mockStreamRepo.invalidateStream("song_net") }
+        assertThat(viewModel.playbackState.value as Any).isInstanceOf(PlaybackState.Error::class.java)
+    }
+
+    @Test
+    fun `network change during active playback invalidates stream and refetches preserving position`() = runTest(testDispatcher) {
+        val testSong = Song("song_net_change", "Test Change", "Artist", "", 100L, "http://audio/net_change")
+        coEvery { mockGetStream("song_net_change") } returns Resource.Success("http://audio/fresh")
+
+        viewModel.playSingleSong(testSong)
+        runCurrent()
+
+        // Simulate active playback on Wi-Fi
+        networkTypeFlow.value = "Wi-Fi"
+        runCurrent()
+
+        // Network changes from Wi-Fi to Datos móviles
+        networkTypeFlow.value = "Datos móviles"
+        runCurrent()
+
+        // Stream must be invalidated and re-fetched
+        verify(atLeast = 1) { mockStreamRepo.invalidateStream("song_net_change") }
     }
 
     @Test
@@ -130,6 +189,7 @@ class PlayerViewModelRetryTest {
 
         // Emit error on song 1 to capture position
         playerErrorFlow.emit("Error del servidor de audio (HTTP 403)")
+        advanceTimeBy(1000L)
         runCurrent()
 
         // User changes song to song 2

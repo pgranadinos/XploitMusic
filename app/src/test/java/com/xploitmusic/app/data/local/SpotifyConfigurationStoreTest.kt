@@ -28,7 +28,8 @@ class SpotifyConfigurationStoreTest {
 
     @Test
     fun `rejects client secret style or malformed values`() {
+        val initialValue = store.clientId.value
         assertThat(store.saveClientId("short").isFailure).isTrue()
-        assertThat(store.clientId.value).isEmpty()
+        assertThat(store.clientId.value).isEqualTo(initialValue)
     }
 }

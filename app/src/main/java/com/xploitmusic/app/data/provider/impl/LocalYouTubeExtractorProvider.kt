@@ -23,7 +23,7 @@ class LocalYouTubeExtractorProvider @Inject constructor(
         }
 
     override suspend fun getStream(videoId: String): Result<String> =
-        executeWithRetry(providerId, timeoutMs = 12_000L, maxRetries = 0) {
+        executeWithRetry(providerId, timeoutMs = 8_000L, maxRetries = 0) {
             extractor.getStream(videoId)
         }
 
