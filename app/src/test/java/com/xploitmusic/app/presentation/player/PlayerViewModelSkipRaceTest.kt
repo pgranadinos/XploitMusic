@@ -65,7 +65,7 @@ class PlayerViewModelSkipRaceTest {
             coEvery { duration } returns flowOf(0L)
             coEvery { trackEnded } returns flowOf(Unit)
             coEvery { mediaItemTransition } returns fakeMediaTransitionFlow
-            coEvery { playerError } returns flowOf(null)
+            coEvery { playerError } returns kotlinx.coroutines.flow.MutableSharedFlow<com.xploitmusic.app.domain.model.PlayerError>()
             coEvery { hasNextMediaItem() } returns false
         }
 
@@ -83,6 +83,7 @@ class PlayerViewModelSkipRaceTest {
         val mockAnalyticsLogger: com.xploitmusic.app.core.analytics.XploitAnalyticsLogger = mockk(relaxed = true)
         val mockPlaybackLogManager: com.xploitmusic.app.core.util.PlaybackLogManager = mockk(relaxed = true) {
             coEvery { currentNetworkType } returns MutableStateFlow("Wi-Fi")
+            coEvery { networkEvents } returns kotlinx.coroutines.flow.MutableSharedFlow()
         }
         viewModel = PlayerViewModel(
             playerRepository = mockPlayerRepo,

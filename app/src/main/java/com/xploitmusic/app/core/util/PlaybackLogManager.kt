@@ -9,8 +9,11 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -31,6 +34,9 @@ class PlaybackLogManager @Inject constructor(
 ) {
     private val _currentNetworkType = MutableStateFlow("UNKNOWN")
     val currentNetworkType: StateFlow<String> = _currentNetworkType.asStateFlow()
+
+    private val _networkEvents = MutableSharedFlow<String>(extraBufferCapacity = 16)
+    val networkEvents: SharedFlow<String> = _networkEvents.asSharedFlow()
     companion object {
         private const val TAG = "XploitPlaybackAudit"
         private const val LOG_DIR = "logs"
@@ -192,11 +198,13 @@ class PlaybackLogManager @Inject constructor(
                         else -> "Red conectada"
                     }
                     _currentNetworkType.value = typeStr
+                    _networkEvents.tryEmit(typeStr)
                     log("NETWORK", "INFO", "Estado de red cambiado: $typeStr")
                 }
 
                 override fun onLost(network: android.net.Network) {
                     _currentNetworkType.value = "Sin red"
+                    _networkEvents.tryEmit("Sin red")
                     log("NETWORK", "WARN", "Estado de red cambiado: Sin red (Desconectado)")
                 }
             })

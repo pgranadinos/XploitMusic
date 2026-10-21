@@ -242,46 +242,54 @@ class PlayerViewModel @Inject constructor(
 
         // Listen for ExoPlayer errors (network failures, decode errors, etc.)
         viewModelScope.launch {
-            playerRepository.playerError.collect { errorMsg ->
-                if (errorMsg != null) {
-                    Log.e(TAG, "PlayerVM: Player error received: $errorMsg")
-                    val currentSong = _currentSong.value
-                    val isRetryableError = errorMsg.contains("IO_BAD_HTTP_STATUS") ||
-                        errorMsg.contains("Source error") ||
-                        errorMsg.contains("HTTP") ||
-                        errorMsg.contains("403") ||
-                        errorMsg.contains("IO_NETWORK_CONNECTION_FAILED") ||
-                        errorMsg.contains("IO_NETWORK_CONNECTION_TIMEOUT") ||
-                        errorMsg.contains("IO_UNSPECIFIED")
+            playerRepository.playerError.collect { playerErr ->
+                val errorMsg = playerErr.message
+                val code = playerErr.code
+                val codeName = playerErr.codeName
+                Log.e(TAG, "PlayerVM: Player error received — code=$code ($codeName), msg=$errorMsg")
 
-                    if (currentSong != null && currentSongRetryCount < 2 && isRetryableError) {
-                        val capturedGen = _playGeneration
-                        val capturedSongId = currentSong.id
-                        val savedPosition = currentPosition.value
+                val currentSong = _currentSong.value
+                val isRetryableCode = code == androidx.media3.common.PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ||
+                    code == androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
+                    code == androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ||
+                    code == androidx.media3.common.PlaybackException.ERROR_CODE_IO_UNSPECIFIED ||
+                    codeName.contains("403") ||
+                    errorMsg.contains("Source error") ||
+                    errorMsg.contains("HTTP")
 
-                        currentSongRetryCount++
-                        pendingResumePositionMs = if (savedPosition > 1000L) savedPosition else null
-                        pendingResumePositionSongId = capturedSongId
+                playbackLogManager.log(
+                    "DEBUG",
+                    "INFO",
+                    "DEBUG_DIAGNOSTIC | code=$code ($codeName) | msg='$errorMsg' | songId=${currentSong?.id} | retryCount=$currentSongRetryCount | gen=$_playGeneration | isRetryable=$isRetryableCode"
+                )
 
-                        streamRepository.invalidateStream(capturedSongId)
+                if (currentSong != null && currentSongRetryCount < 2 && isRetryableCode) {
+                    val capturedGen = _playGeneration
+                    val capturedSongId = currentSong.id
+                    val savedPosition = currentPosition.value
 
-                        Log.w(TAG, "PlayerVM: 🔄 Stream error for '${currentSong.title}' ($errorMsg). Retrying fetch (attempt $currentSongRetryCount)...")
-                        playbackLogManager.log("PLAYBACK", "WARN", "Retrying stream fetch for song '${currentSong.title}' ($capturedSongId) due to error: $errorMsg (attempt $currentSongRetryCount)")
+                    currentSongRetryCount++
+                    pendingResumePositionMs = if (savedPosition > 1000L) savedPosition else null
+                    pendingResumePositionSongId = capturedSongId
 
-                        viewModelScope.launch {
-                            delay(currentSongRetryCount * 1000L) // Increasing backoff between retries (1s, 2s)
-                            if (_playGeneration == capturedGen && _currentSong.value?.id == capturedSongId) {
-                                playInternal(currentSong, capturedGen, isRetry = true)
-                            } else {
-                                Log.d(TAG, "PlayerVM: Playback target or generation changed during retry — ignoring retry.")
-                            }
+                    streamRepository.invalidateStream(capturedSongId)
+
+                    Log.w(TAG, "PlayerVM: 🔄 Stream error for '${currentSong.title}' ($codeName). Retrying fetch (attempt $currentSongRetryCount)...")
+                    playbackLogManager.log("PLAYBACK", "WARN", "Retrying stream fetch for song '${currentSong.title}' ($capturedSongId) due to error $codeName ($errorMsg) (attempt $currentSongRetryCount)")
+
+                    viewModelScope.launch {
+                        delay(currentSongRetryCount * 1000L) // Increasing backoff between retries (1s, 2s)
+                        if (_playGeneration == capturedGen && _currentSong.value?.id == capturedSongId) {
+                            playInternal(currentSong, capturedGen, isRetry = true)
+                        } else {
+                            Log.d(TAG, "PlayerVM: Playback target or generation changed during retry — ignoring retry.")
                         }
-                    } else {
-                        val friendlyMsg = makeFriendlyError(errorMsg)
-                        _errorMessage.value = friendlyMsg
-                        _playbackState.value = PlaybackState.Error(friendlyMsg)
-                        triggerAutoSkip()
                     }
+                } else {
+                    val friendlyMsg = makeFriendlyError(errorMsg)
+                    _errorMessage.value = friendlyMsg
+                    _playbackState.value = PlaybackState.Error(friendlyMsg)
+                    triggerAutoSkip()
                 }
             }
         }
@@ -289,10 +297,17 @@ class PlayerViewModel @Inject constructor(
         // Observe network changes during active playback to invalidate old URLs and resolve fresh streams
         viewModelScope.launch {
             var previousNetworkType = playbackLogManager.currentNetworkType.value
-            playbackLogManager.currentNetworkType.collect { newNetworkType ->
+            playbackLogManager.networkEvents.collect { newNetworkType ->
                 val song = _currentSong.value
                 val state = _playbackState.value
                 val isPlayingOrBuffering = isPlaying.value || state is PlaybackState.Playing || state is PlaybackState.Buffering
+
+                playbackLogManager.log(
+                    "DEBUG",
+                    "INFO",
+                    "DEBUG_DIAGNOSTIC_NETWORK | previous='$previousNetworkType' | new='$newNetworkType' | songId=${song?.id} | isPlaying=${isPlaying.value} | playbackState=$state"
+                )
+
                 if (song != null && isPlayingOrBuffering && previousNetworkType != "UNKNOWN" && previousNetworkType != newNetworkType && newNetworkType != "Sin red") {
                     val savedPosition = currentPosition.value
                     val capturedGen = _playGeneration
