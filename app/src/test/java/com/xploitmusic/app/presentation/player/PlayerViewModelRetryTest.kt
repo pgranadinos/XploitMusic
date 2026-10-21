@@ -157,26 +157,46 @@ class PlayerViewModelRetryTest {
             message = "Error de red: verifica tu conexión a internet"
         )
 
-        // 1st network error by code
+        // 1st network error by code (1s backoff)
         playerErrorFlow.emit(netFailError)
         advanceTimeBy(1000L)
         runCurrent()
 
         verify(exactly = 1) { mockStreamRepo.invalidateStream("song_net") }
 
-        // 2nd network error by code
+        // 2nd network error by code (2s backoff)
         playerErrorFlow.emit(netTimeoutError)
         advanceTimeBy(2000L)
         runCurrent()
 
         verify(exactly = 2) { mockStreamRepo.invalidateStream("song_net") }
 
-        // 3rd network error: should stop retrying and emit Error state
+        // 3rd network error: should stop retrying, set Error state and trigger auto-skip
         playerErrorFlow.emit(netFailError)
         runCurrent()
 
         verify(exactly = 2) { mockStreamRepo.invalidateStream("song_net") }
         assertThat(viewModel.playbackState.value as Any).isInstanceOf(PlaybackState.Error::class.java)
+    }
+
+    @Test
+    fun `direct network change from Wi-Fi to Datos moviles with active playback invalidates stream and refetches preserving position`() = runTest(testDispatcher) {
+        val testSong = Song("song_direct_change", "Test Direct", "Artist", "", 100L, "http://audio/direct")
+        coEvery { mockGetStream("song_direct_change") } returns Resource.Success("http://audio/fresh")
+
+        viewModel.playSingleSong(testSong)
+        runCurrent()
+        clearMocks(mockStreamRepo, answers = false)
+
+        // Direct transition from Wi-Fi to Datos móviles
+        networkEventsFlow.emit("Wi-Fi")
+        runCurrent()
+
+        networkEventsFlow.emit("Datos móviles")
+        runCurrent()
+
+        // Stream must be invalidated and re-fetched once
+        verify(exactly = 1) { mockStreamRepo.invalidateStream("song_direct_change") }
     }
 
     @Test
@@ -188,13 +208,37 @@ class PlayerViewModelRetryTest {
         runCurrent()
         clearMocks(mockStreamRepo, answers = false)
 
-        // Emit "Sin red" and "Datos móviles" rapidly in succession without runCurrent() between them
+        // Emit "Wi-Fi", "Sin red" and "Datos móviles" in rapid succession
+        networkEventsFlow.emit("Wi-Fi")
         networkEventsFlow.emit("Sin red")
         networkEventsFlow.emit("Datos móviles")
         runCurrent()
 
-        // Must invalidate and re-fetch stream exactly ONCE
+        // Must invalidate and re-fetch stream exactly ONCE upon reconnecting
         verify(exactly = 1) { mockStreamRepo.invalidateStream("song_rapid") }
+    }
+
+    @Test
+    fun `transitioning from Wi-Fi to Sin red and back to Wi-Fi resolves stream exactly once upon reconnecting`() = runTest(testDispatcher) {
+        val testSong = Song("song_reconnect", "Test Reconnect", "Artist", "", 100L, "http://audio/reconnect")
+        coEvery { mockGetStream("song_reconnect") } returns Resource.Success("http://audio/fresh")
+
+        viewModel.playSingleSong(testSong)
+        runCurrent()
+        clearMocks(mockStreamRepo, answers = false)
+
+        // 1. Wi-Fi -> Sin red (should NOT re-resolve stream while disconnected)
+        networkEventsFlow.emit("Wi-Fi")
+        networkEventsFlow.emit("Sin red")
+        runCurrent()
+
+        verify(exactly = 0) { mockStreamRepo.invalidateStream(any()) }
+
+        // 2. Sin red -> Wi-Fi (should re-resolve stream)
+        networkEventsFlow.emit("Wi-Fi")
+        runCurrent()
+
+        verify(exactly = 1) { mockStreamRepo.invalidateStream("song_reconnect") }
     }
 
     @Test
