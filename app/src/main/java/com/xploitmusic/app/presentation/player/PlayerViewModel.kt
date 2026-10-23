@@ -23,10 +23,12 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
@@ -38,7 +40,7 @@ import javax.inject.Inject
 import com.xploitmusic.app.domain.model.PlaybackState
 import com.xploitmusic.app.domain.model.RepeatMode
 
-@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class, kotlinx.coroutines.FlowPreview::class)
 @HiltViewModel
 class PlayerViewModel @Inject constructor(
     private val playerRepository: PlayerRepository,
@@ -307,36 +309,46 @@ class PlayerViewModel @Inject constructor(
             }
         }
 
-        // Observe network changes during active playback to invalidate old URLs and resolve fresh streams
+        // Observe network changes with 2.5s debounce window before deciding
         viewModelScope.launch {
             var previousNetworkType = playbackLogManager.currentNetworkType.value
-            playbackLogManager.networkEvents.collect { newNetworkType ->
-                val song = _currentSong.value
-                val state = _playbackState.value
-                val isPlayingOrBuffering = isPlaying.value || state is PlaybackState.Playing || state is PlaybackState.Buffering
-                val isWaitingForNetwork = pendingResumePositionSongId == song?.id && (state is PlaybackState.Error || !isPlaying.value)
+            playbackLogManager.networkEvents
+                .debounce(2500L)
+                .collect { newNetworkType ->
+                    val song = _currentSong.value
+                    val state = _playbackState.value
+                    val isPlayingOrBuffering = isPlaying.value || state is PlaybackState.Playing || state is PlaybackState.Buffering
+                    val isWaitingForNetwork = pendingResumePositionSongId == song?.id && (state is PlaybackState.Error || !isPlaying.value)
 
-                playbackLogManager.log(
-                    "DEBUG",
-                    "INFO",
-                    "DEBUG_DIAGNOSTIC_NETWORK | previous='$previousNetworkType' | new='$newNetworkType' | songId=${song?.id} | isPlaying=${isPlaying.value} | playbackState=$state | waitingForNet=$isWaitingForNetwork"
-                )
+                    playbackLogManager.log(
+                        "DEBUG",
+                        "INFO",
+                        "DEBUG_DIAGNOSTIC_NETWORK | previous='$previousNetworkType' | new='$newNetworkType' | songId=${song?.id} | isPlaying=${isPlaying.value} | playbackState=$state | waitingForNet=$isWaitingForNetwork"
+                    )
 
-                if (song != null && (isPlayingOrBuffering || isWaitingForNetwork) && previousNetworkType != "UNKNOWN" && previousNetworkType != newNetworkType && newNetworkType != "Sin red") {
-                    val savedPosition = pendingResumePositionMs ?: currentPosition.value
-                    val capturedGen = _playGeneration
-                    val capturedSongId = song.id
+                    if (song != null && previousNetworkType != "UNKNOWN" && previousNetworkType != newNetworkType) {
+                        if (newNetworkType == "Sin red") {
+                            // Offline - network loss handling
+                        } else if (isWaitingForNetwork || state is PlaybackState.Error) {
+                            // Only invalidate and re-fetch if in Error or waiting state
+                            val savedPosition = pendingResumePositionMs ?: currentPosition.value
+                            val capturedGen = _playGeneration
+                            val capturedSongId = song.id
 
-                    pendingResumePositionMs = if (savedPosition > 1000L) savedPosition else null
-                    pendingResumePositionSongId = capturedSongId
+                            pendingResumePositionMs = if (savedPosition > 1000L) savedPosition else null
+                            pendingResumePositionSongId = capturedSongId
 
-                    streamRepository.invalidateStream(capturedSongId)
-                    playbackLogManager.log("NETWORK", "WARN", "Red restablecida ($previousNetworkType -> $newNetworkType). Resolviendo stream fresco para '${song.title}' desde ${savedPosition}ms")
+                            streamRepository.invalidateStream(capturedSongId)
+                            playbackLogManager.log("NETWORK", "WARN", "Red restablecida ($previousNetworkType -> $newNetworkType). Resolviendo stream fresco para '${song.title}' desde ${savedPosition}ms")
 
-                    playInternal(song, capturedGen, isRetry = true)
+                            playInternal(song, capturedGen, isRetry = true)
+                        } else if (isPlayingOrBuffering) {
+                            // Active playback: do NOT invalidate stream or restart playback
+                            playbackLogManager.log("NETWORK", "INFO", "Red cambió a $newNetworkType con reproducción activa; se mantiene el buffer")
+                        }
+                    }
+                    previousNetworkType = newNetworkType
                 }
-                previousNetworkType = newNetworkType
-            }
         }
     }
 
