@@ -180,6 +180,58 @@ class PlayerViewModelRetryTest {
     }
 
     @Test
+    fun `player error with status Sin red does not invalidate stream, does not call playInternal and does not increase retry count`() = runTest(testDispatcher) {
+        val testSong = Song("song_offline_err", "Offline Err", "Artist", "", 100L, "http://audio/offline_err")
+        coEvery { mockGetStream("song_offline_err") } returns Resource.Success("http://audio/fresh")
+
+        viewModel.playSingleSong(testSong)
+        runCurrent()
+        clearMocks(mockStreamRepo, answers = false)
+
+        // Network goes to "Sin red"
+        networkTypeFlow.value = "Sin red"
+
+        val err = PlayerError(
+            code = PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+            codeName = "ERROR_CODE_IO_NETWORK_CONNECTION_FAILED",
+            message = "Error de red: verifica tu conexión a internet"
+        )
+
+        // Emit error while network is "Sin red"
+        playerErrorFlow.emit(err)
+        runCurrent()
+
+        // Stream must NOT be invalidated while offline
+        verify(exactly = 0) { mockStreamRepo.invalidateStream(any()) }
+
+        // State is set to error with MSG_NO_INTERNET
+        assertThat(viewModel.playbackState.value as Any).isInstanceOf(PlaybackState.Error::class.java)
+        val errState = viewModel.playbackState.value as PlaybackState.Error
+        assertThat(errState.message).contains("Sin conexión a internet")
+    }
+
+    @Test
+    fun `manual pause clears pending resume position`() = runTest(testDispatcher) {
+        val testSong = Song("song_manual_pause", "Pause Test", "Artist", "", 100L, "http://audio/pause")
+        coEvery { mockGetStream("song_manual_pause") } returns Resource.Success("http://audio/fresh")
+
+        viewModel.playSingleSong(testSong)
+        runCurrent()
+
+        // User manually pauses
+        viewModel.togglePlayPause()
+        runCurrent()
+
+        // Network changes from Datos móviles to Wi-Fi
+        networkTypeFlow.value = "Wi-Fi"
+        networkEventsFlow.emit("Wi-Fi")
+        runCurrent()
+
+        // Should NOT attempt auto-resume on manual pause
+        coVerify(exactly = 1) { mockPlayerRepo.pause() }
+    }
+
+    @Test
     fun `direct network change from Wi-Fi to Datos moviles with active playback invalidates stream and refetches preserving position`() = runTest(testDispatcher) {
         val testSong = Song("song_direct_change", "Test Direct", "Artist", "", 100L, "http://audio/direct")
         coEvery { mockGetStream("song_direct_change") } returns Resource.Success("http://audio/fresh")

@@ -60,6 +60,7 @@ class PlayerViewModel @Inject constructor(
     companion object {
         private const val TAG = "XploitDebug"
         private const val MAX_CONSECUTIVE_AUTO_SKIPS = 5
+        const val MSG_NO_INTERNET = "Sin conexión a internet — la reproducción se reanudará al reconectar."
     }
 
     private val _currentSong = MutableStateFlow<Song?>(null)
@@ -249,6 +250,18 @@ class PlayerViewModel @Inject constructor(
                 Log.e(TAG, "PlayerVM: Player error received — code=$code ($codeName), msg=$errorMsg")
 
                 val currentSong = _currentSong.value
+
+                // 1. If device is completely offline ("Sin red"), pause without consuming retries, invalidating stream or auto-skipping!
+                if (playbackLogManager.currentNetworkType.value == "Sin red") {
+                    val savedPosition = currentPosition.value
+                    pendingResumePositionMs = if (savedPosition > 1000L) savedPosition else null
+                    pendingResumePositionSongId = currentSong?.id
+                    _errorMessage.value = MSG_NO_INTERNET
+                    _playbackState.value = PlaybackState.Error(MSG_NO_INTERNET)
+                    playbackLogManager.log("PLAYBACK", "WARN", "Reproducción pausada por falta de red en '${currentSong?.title}' a los ${savedPosition}ms")
+                    return@collect
+                }
+
                 val isRetryableCode = code == androidx.media3.common.PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ||
                     code == androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
                     code == androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ||
@@ -286,21 +299,10 @@ class PlayerViewModel @Inject constructor(
                         }
                     }
                 } else {
-                    val isNoNetwork = playbackLogManager.currentNetworkType.value == "Sin red"
-                    if (isNoNetwork && currentSong != null) {
-                        val savedPosition = currentPosition.value
-                        pendingResumePositionMs = if (savedPosition > 1000L) savedPosition else null
-                        pendingResumePositionSongId = currentSong.id
-                        val friendlyMsg = "Sin conexión a internet — la reproducción se reanudará al reconectar."
-                        _errorMessage.value = friendlyMsg
-                        _playbackState.value = PlaybackState.Error(friendlyMsg)
-                        playbackLogManager.log("PLAYBACK", "WARN", "Reproducción pausada por falta de red en '${currentSong.title}' a los ${savedPosition}ms")
-                    } else {
-                        val friendlyMsg = makeFriendlyError(errorMsg)
-                        _errorMessage.value = friendlyMsg
-                        _playbackState.value = PlaybackState.Error(friendlyMsg)
-                        triggerAutoSkip()
-                    }
+                    val friendlyMsg = makeFriendlyError(errorMsg)
+                    _errorMessage.value = friendlyMsg
+                    _playbackState.value = PlaybackState.Error(friendlyMsg)
+                    triggerAutoSkip()
                 }
             }
         }
@@ -927,6 +929,8 @@ class PlayerViewModel @Inject constructor(
     fun togglePlayPause() {
         viewModelScope.launch {
             if (isPlaying.value) {
+                pendingResumePositionMs = null
+                pendingResumePositionSongId = null
                 playerRepository.pause()
             } else {
                 if (_playbackState.value is PlaybackState.Idle && _currentSong.value != null) {
