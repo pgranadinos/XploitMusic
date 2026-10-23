@@ -287,8 +287,9 @@ class PlayerViewModelRetryTest {
         advanceTimeBy(3000L)
         runCurrent()
 
-        // Must invalidate and re-fetch stream once
+        // Must invalidate and re-fetch stream once and resume playing
         verify(atLeast = 1) { mockStreamRepo.invalidateStream("song_err_resume") }
+        assertThat(viewModel.playbackState.value as Any).isInstanceOf(PlaybackState.Playing::class.java)
     }
 
     @Test
@@ -402,5 +403,44 @@ class PlayerViewModelRetryTest {
 
         // Verify seekTo(5000L) was never called for song_2
         coVerify(exactly = 0) { mockPlayerRepo.seekTo(5000L) }
+    }
+
+    @Test
+    fun `new song requested while offline does not inherit previous song saved position`() = runTest(testDispatcher) {
+        val song1 = Song("song_113", "Song 113", "Artist", "", 200L, "http://audio/113")
+        val song2 = Song("song_new", "New Song", "Artist", "", 200L, "http://audio/new")
+        coEvery { mockGetStream("song_113") } returns Resource.Success("http://audio/fresh1")
+        coEvery { mockGetStream("song_new") } returns Resource.Success("http://audio/fresh2")
+
+        val posFlow = MutableStateFlow(113_000L)
+        every { mockPlayerRepo.currentPosition } returns posFlow
+
+        viewModel.playSingleSong(song1)
+        advanceTimeBy(3000L)
+        runCurrent()
+
+        // Go offline and trigger error on song 1 to capture 113s position
+        networkTypeFlow.value = "Sin red"
+        val netErr = PlayerError(
+            code = PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+            codeName = "ERROR_CODE_IO_NETWORK_CONNECTION_FAILED",
+            message = "Error de red: verifica tu conexión a internet"
+        )
+        playerErrorFlow.emit(netErr)
+        runCurrent()
+
+        // Now request song 2 while offline
+        viewModel.playSingleSong(song2)
+        advanceTimeBy(3000L)
+        runCurrent()
+
+        // Network returns: "Datos móviles"
+        networkTypeFlow.value = "Datos móviles"
+        networkEventsFlow.emit("Datos móviles")
+        advanceTimeBy(3000L)
+        runCurrent()
+
+        // Verify seekTo was never called with 113_000L (song 2 must start from 0)
+        coVerify(exactly = 0) { mockPlayerRepo.seekTo(113_000L) }
     }
 }

@@ -330,8 +330,8 @@ class PlayerViewModel @Inject constructor(
                         if (newNetworkType == "Sin red") {
                             // Offline - network loss handling
                         } else if (isWaitingForNetwork || state is PlaybackState.Error) {
-                            // Only invalidate and re-fetch if in Error or waiting state
-                            val savedPosition = pendingResumePositionMs ?: currentPosition.value
+                            // Only invalidate and re-fetch if in Error or waiting state, strictly checking song match for saved position
+                            val savedPosition = if (pendingResumePositionSongId == song.id) (pendingResumePositionMs ?: currentPosition.value) else 0L
                             val capturedGen = _playGeneration
                             val capturedSongId = song.id
 
