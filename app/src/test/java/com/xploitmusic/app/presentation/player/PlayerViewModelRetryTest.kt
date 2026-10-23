@@ -269,4 +269,29 @@ class PlayerViewModelRetryTest {
         // Verify seekTo(5000L) was never called for song_2
         coVerify(exactly = 0) { mockPlayerRepo.seekTo(5000L) }
     }
+
+    @Test
+    fun `song requested or ending while network is Sin red pauses without auto skipping and resumes when connected`() = runTest(testDispatcher) {
+        val song1 = Song("song_offline_pause", "Offline Song", "Artist", "", 100L, "http://audio/offline")
+        coEvery { mockGetStream("song_offline_pause") } returns Resource.Success("http://audio/fresh")
+
+        // Set network to "Sin red"
+        networkTypeFlow.value = "Sin red"
+        runCurrent()
+
+        // Request playback while disconnected
+        viewModel.playSingleSong(song1)
+        runCurrent()
+
+        // Verify stream extraction was NOT called while disconnected
+        coVerify(exactly = 0) { mockGetStream(any()) }
+        assertThat(viewModel.playbackState.value as Any).isInstanceOf(PlaybackState.Error::class.java)
+
+        // Restoring network to "Datos móviles" must trigger stream resolution and play
+        networkTypeFlow.value = "Datos móviles"
+        networkEventsFlow.emit("Datos móviles")
+        runCurrent()
+
+        coVerify(atLeast = 1) { mockGetStream("song_offline_pause") }
+    }
 }

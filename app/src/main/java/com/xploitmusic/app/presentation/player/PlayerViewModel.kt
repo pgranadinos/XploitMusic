@@ -286,10 +286,21 @@ class PlayerViewModel @Inject constructor(
                         }
                     }
                 } else {
-                    val friendlyMsg = makeFriendlyError(errorMsg)
-                    _errorMessage.value = friendlyMsg
-                    _playbackState.value = PlaybackState.Error(friendlyMsg)
-                    triggerAutoSkip()
+                    val isNoNetwork = playbackLogManager.currentNetworkType.value == "Sin red"
+                    if (isNoNetwork && currentSong != null) {
+                        val savedPosition = currentPosition.value
+                        pendingResumePositionMs = if (savedPosition > 1000L) savedPosition else null
+                        pendingResumePositionSongId = currentSong.id
+                        val friendlyMsg = "Sin conexión a internet — la reproducción se reanudará al reconectar."
+                        _errorMessage.value = friendlyMsg
+                        _playbackState.value = PlaybackState.Error(friendlyMsg)
+                        playbackLogManager.log("PLAYBACK", "WARN", "Reproducción pausada por falta de red en '${currentSong.title}' a los ${savedPosition}ms")
+                    } else {
+                        val friendlyMsg = makeFriendlyError(errorMsg)
+                        _errorMessage.value = friendlyMsg
+                        _playbackState.value = PlaybackState.Error(friendlyMsg)
+                        triggerAutoSkip()
+                    }
                 }
             }
         }
@@ -301,15 +312,16 @@ class PlayerViewModel @Inject constructor(
                 val song = _currentSong.value
                 val state = _playbackState.value
                 val isPlayingOrBuffering = isPlaying.value || state is PlaybackState.Playing || state is PlaybackState.Buffering
+                val isWaitingForNetwork = pendingResumePositionSongId == song?.id && (state is PlaybackState.Error || !isPlaying.value)
 
                 playbackLogManager.log(
                     "DEBUG",
                     "INFO",
-                    "DEBUG_DIAGNOSTIC_NETWORK | previous='$previousNetworkType' | new='$newNetworkType' | songId=${song?.id} | isPlaying=${isPlaying.value} | playbackState=$state"
+                    "DEBUG_DIAGNOSTIC_NETWORK | previous='$previousNetworkType' | new='$newNetworkType' | songId=${song?.id} | isPlaying=${isPlaying.value} | playbackState=$state | waitingForNet=$isWaitingForNetwork"
                 )
 
-                if (song != null && isPlayingOrBuffering && previousNetworkType != "UNKNOWN" && previousNetworkType != newNetworkType && newNetworkType != "Sin red") {
-                    val savedPosition = currentPosition.value
+                if (song != null && (isPlayingOrBuffering || isWaitingForNetwork) && previousNetworkType != "UNKNOWN" && previousNetworkType != newNetworkType && newNetworkType != "Sin red") {
+                    val savedPosition = pendingResumePositionMs ?: currentPosition.value
                     val capturedGen = _playGeneration
                     val capturedSongId = song.id
 
@@ -317,7 +329,7 @@ class PlayerViewModel @Inject constructor(
                     pendingResumePositionSongId = capturedSongId
 
                     streamRepository.invalidateStream(capturedSongId)
-                    playbackLogManager.log("NETWORK", "WARN", "Cambio de red ($previousNetworkType -> $newNetworkType) con reproducción activa. Resolviendo stream fresco para '${song.title}' en ${savedPosition}ms")
+                    playbackLogManager.log("NETWORK", "WARN", "Red restablecida ($previousNetworkType -> $newNetworkType). Resolviendo stream fresco para '${song.title}' desde ${savedPosition}ms")
 
                     playInternal(song, capturedGen, isRetry = true)
                 }
@@ -653,6 +665,16 @@ class PlayerViewModel @Inject constructor(
             return
         }
 
+        // ── ONLINE SONG: Pause without auto-skipping if network is completely disconnected ──
+        if (playbackLogManager.currentNetworkType.value == "Sin red") {
+            val friendlyMsg = "Sin conexión a internet — la reproducción se reanudará al reconectar."
+            pendingResumePositionSongId = song.id
+            _errorMessage.value = friendlyMsg
+            _playbackState.value = PlaybackState.Error(friendlyMsg)
+            playbackLogManager.log("PLAYBACK", "WARN", "Canción '${song.title}' solicitada sin red. Pausando en espera de conexión.")
+            return
+        }
+
         // ── ONLINE SONG: full fetch pipeline ──
 
         // Launch background tasks independently (fire-and-forget in viewModelScope)
@@ -726,10 +748,26 @@ class PlayerViewModel @Inject constructor(
                     }
                     Log.e(TAG, "PlayerVM: ❌ Stream error: ${result.message}")
                     _ignoringTransition = false
-                    _errorMessage.value = result.message ?: "Error al obtener audio. Saltando..."
-                    _playbackState.value = PlaybackState.Error(result.message ?: "Error")
-                    analyticsLogger.logPlayError(song.id, result.message ?: "Error stream", 0L)
-                    triggerAutoSkip()
+                    val errMsg = result.message.orEmpty()
+                    val isNetworkError = errMsg.contains("No se pudo resolver") ||
+                        errMsg.contains("Network or timeout") ||
+                        errMsg.contains("Unable to resolve host") ||
+                        errMsg.contains("Sin conexión") ||
+                        errMsg.contains("timeout") ||
+                        errMsg.contains("timed out")
+
+                    if (isNetworkError) {
+                        val friendlyMsg = "Sin conexión a internet — la reproducción se reanudará al reconectar."
+                        pendingResumePositionSongId = song.id
+                        _errorMessage.value = friendlyMsg
+                        _playbackState.value = PlaybackState.Error(friendlyMsg)
+                        playbackLogManager.log("PLAYBACK", "WARN", "Error de red al extraer stream de '${song.title}'. Pausando en espera de conexión.")
+                    } else {
+                        _errorMessage.value = result.message ?: "Error al obtener audio. Saltando..."
+                        _playbackState.value = PlaybackState.Error(result.message ?: "Error")
+                        analyticsLogger.logPlayError(song.id, result.message ?: "Error stream", 0L)
+                        triggerAutoSkip()
+                    }
                 }
                 else -> {
                     if (_playGeneration != generation) { _ignoringTransition = false; return }
@@ -746,9 +784,20 @@ class PlayerViewModel @Inject constructor(
             }
             Log.e(TAG, "PlayerVM: ❌ Exception in stream fetch: ${e.javaClass.simpleName}: ${e.message}", e)
             _ignoringTransition = false
-            val friendlyMsg = makeFriendlyError(e.localizedMessage ?: "Error desconocido")
-            _errorMessage.value = friendlyMsg
-            _playbackState.value = PlaybackState.Error(friendlyMsg)
+            val isNetExc = e is java.io.IOException
+            if (isNetExc) {
+                val friendlyMsg = "Sin conexión a internet — la reproducción se reanudará al reconectar."
+                pendingResumePositionSongId = song.id
+                _errorMessage.value = friendlyMsg
+                _playbackState.value = PlaybackState.Error(friendlyMsg)
+                playbackLogManager.log("PLAYBACK", "WARN", "Excepción de red al extraer stream de '${song.title}'. Pausando en espera de conexión.")
+            } else {
+                val friendlyMsg = makeFriendlyError(e.message ?: "Error al cargar audio")
+                _errorMessage.value = friendlyMsg
+                _playbackState.value = PlaybackState.Error(friendlyMsg)
+                analyticsLogger.logPlayError(song.id, e.message ?: "Exception stream", 0L)
+                triggerAutoSkip()
+            }
         } finally {
             // If still LOADING (no success/error set above), reset to IDLE
             if (_playbackState.value is PlaybackState.Buffering) {
