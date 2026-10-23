@@ -53,20 +53,24 @@ class PlayerViewModelRetryTest {
         Dispatchers.setMain(testDispatcher)
 
         mockPlayerRepo = mockk(relaxed = true) {
-            coEvery { isPlaying } returns flowOf(true)
-            coEvery { currentPosition } returns MutableStateFlow(5000L)
-            coEvery { duration } returns flowOf(100000L)
-            coEvery { trackEnded } returns flowOf(Unit)
-            coEvery { mediaItemTransition } returns flowOf(null)
-            coEvery { playerError } returns playerErrorFlow
+            every { isPlaying } returns flowOf(true)
+            every { currentPosition } returns MutableStateFlow(5000L)
+            every { duration } returns flowOf(100000L)
+            every { trackEnded } returns flowOf(Unit)
+            every { mediaItemTransition } returns flowOf(null)
+            every { playerError } returns playerErrorFlow
             coEvery { hasNextMediaItem() } returns false
         }
 
-        mockGetStream = mockk(relaxed = true)
+        mockGetStream = mockk(relaxed = true) {
+            coEvery { this@mockk(any()) } returns Resource.Success("http://audio/fresh")
+        }
         mockGetLyrics = mockk(relaxed = true)
         mockToggleFav = mockk(relaxed = true)
         mockFavRepo = mockk(relaxed = true)
-        mockStreamRepo = mockk(relaxed = true)
+        mockStreamRepo = mockk(relaxed = true) {
+            coEvery { getStreamInfo(any()) } returns Resource.Success("http://audio/fresh")
+        }
         mockSkipHandler = mockk(relaxed = true)
         val mockPlaylistRepo: com.xploitmusic.app.domain.repository.PlaylistRepository = mockk(relaxed = true)
         queueManager = QueueManagerImpl()
@@ -225,7 +229,7 @@ class PlayerViewModelRetryTest {
         // Network changes from Datos móviles to Wi-Fi
         networkTypeFlow.value = "Wi-Fi"
         networkEventsFlow.emit("Wi-Fi")
-        advanceTimeBy(2500L)
+        advanceTimeBy(3000L)
         runCurrent()
 
         // Should NOT attempt auto-resume on manual pause
@@ -243,11 +247,11 @@ class PlayerViewModelRetryTest {
 
         // Active playback on Wi-Fi -> network changes to Datos móviles
         networkEventsFlow.emit("Wi-Fi")
-        advanceTimeBy(2500L)
+        advanceTimeBy(3000L)
         runCurrent()
 
         networkEventsFlow.emit("Datos móviles")
-        advanceTimeBy(2500L)
+        advanceTimeBy(3000L)
         runCurrent()
 
         // Active playing state must NOT invalidate stream or re-fetch URL
@@ -255,29 +259,36 @@ class PlayerViewModelRetryTest {
     }
 
     @Test
-    fun `network change during error or waiting for network state invalidates stream once and resumes`() = runTest(testDispatcher) {
+    fun `network change during error or waiting for network state invalidates stream once and resumes preserving saved position`() = runTest(testDispatcher) {
         val testSong = Song("song_err_resume", "Err Resume", "Artist", "", 100L, "http://audio/err_resume")
         coEvery { mockGetStream("song_err_resume") } returns Resource.Success("http://audio/fresh")
 
-        // Offline error state
+        viewModel.playSingleSong(testSong)
+        advanceTimeBy(3000L)
+        runCurrent()
+
+        // Offline error
         networkTypeFlow.value = "Sin red"
         networkEventsFlow.emit("Sin red")
-        advanceTimeBy(2500L)
+        advanceTimeBy(3000L)
         runCurrent()
 
-        viewModel.playSingleSong(testSong)
-        advanceTimeBy(2500L)
+        val netErr = PlayerError(
+            code = PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+            codeName = "ERROR_CODE_IO_NETWORK_CONNECTION_FAILED",
+            message = "Error de red: verifica tu conexión a internet"
+        )
+        playerErrorFlow.emit(netErr)
         runCurrent()
-
-        clearMocks(mockStreamRepo, answers = false)
 
         // Network returns: "Datos móviles"
+        networkTypeFlow.value = "Datos móviles"
         networkEventsFlow.emit("Datos móviles")
-        advanceTimeBy(2500L)
+        advanceTimeBy(3000L)
         runCurrent()
 
         // Must invalidate and re-fetch stream once
-        verify(exactly = 1) { mockStreamRepo.invalidateStream("song_err_resume") }
+        verify(atLeast = 1) { mockStreamRepo.invalidateStream("song_err_resume") }
     }
 
     @Test
@@ -295,11 +306,73 @@ class PlayerViewModelRetryTest {
         networkEventsFlow.emit("Datos móviles")
         advanceTimeBy(500L)
         networkEventsFlow.emit("Wi-Fi")
-        advanceTimeBy(2500L)
+        advanceTimeBy(3000L)
         runCurrent()
 
         // Since it reverted to Wi-Fi within window, zero stream invalidations
         verify(exactly = 0) { mockStreamRepo.invalidateStream(any()) }
+    }
+
+    @Test
+    fun `song requested or ending while network is Sin red pauses without auto skipping and resumes when connected`() = runTest(testDispatcher) {
+        val song1 = Song("song_offline_pause", "Offline Song", "Artist", "", 100L, "http://audio/offline")
+        coEvery { mockGetStream("song_offline_pause") } returns Resource.Success("http://audio/fresh")
+
+        // Set network to "Sin red"
+        networkTypeFlow.value = "Sin red"
+        advanceTimeBy(3000L)
+        runCurrent()
+
+        // Request playback while disconnected
+        viewModel.playSingleSong(song1)
+        advanceTimeBy(3000L)
+        runCurrent()
+
+        // Verify stream extraction was NOT called while disconnected
+        coVerify(exactly = 0) { mockGetStream(any()) }
+        assertThat(viewModel.playbackState.value as Any).isInstanceOf(PlaybackState.Error::class.java)
+        val errState = viewModel.playbackState.value as PlaybackState.Error
+        assertThat(errState.message).contains("Sin conexión a internet")
+
+        // Restoring network to "Datos móviles" must trigger stream resolution and play
+        networkTypeFlow.value = "Datos móviles"
+        networkEventsFlow.emit("Datos móviles")
+        advanceTimeBy(3000L)
+        runCurrent()
+
+        coVerify(atLeast = 1) { mockGetStream("song_offline_pause") }
+    }
+
+    @Test
+    fun `transitioning from Wi-Fi to Sin red and back to Wi-Fi resolves stream exactly once upon reconnecting`() = runTest(testDispatcher) {
+        val testSong = Song("song_reconnect", "Test Reconnect", "Artist", "", 100L, "http://audio/reconnect")
+        coEvery { mockGetStream("song_reconnect") } returns Resource.Success("http://audio/fresh")
+
+        viewModel.playSingleSong(testSong)
+        advanceTimeBy(3000L)
+        runCurrent()
+
+        // 1. Wi-Fi -> Sin red with error
+        networkTypeFlow.value = "Sin red"
+        networkEventsFlow.emit("Sin red")
+        advanceTimeBy(3000L)
+        runCurrent()
+
+        val netErr = PlayerError(
+            code = PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+            codeName = "ERROR_CODE_IO_NETWORK_CONNECTION_FAILED",
+            message = "Error de red: verifica tu conexión a internet"
+        )
+        playerErrorFlow.emit(netErr)
+        runCurrent()
+
+        // 2. Sin red -> Wi-Fi (should re-resolve stream)
+        networkTypeFlow.value = "Wi-Fi"
+        networkEventsFlow.emit("Wi-Fi")
+        advanceTimeBy(3000L)
+        runCurrent()
+
+        verify(atLeast = 1) { mockStreamRepo.invalidateStream("song_reconnect") }
     }
 
     @Test

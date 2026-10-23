@@ -35,7 +35,7 @@ class PlaybackLogManager @Inject constructor(
     private val _currentNetworkType = MutableStateFlow("UNKNOWN")
     val currentNetworkType: StateFlow<String> = _currentNetworkType.asStateFlow()
 
-    private val _networkEvents = MutableSharedFlow<String>(extraBufferCapacity = 16)
+    private val _networkEvents = MutableSharedFlow<String>(replay = 1, extraBufferCapacity = 16)
     val networkEvents: SharedFlow<String> = _networkEvents.asSharedFlow()
     companion object {
         private const val TAG = "XploitPlaybackAudit"
