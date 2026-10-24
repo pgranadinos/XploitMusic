@@ -169,7 +169,7 @@ class NotificationForwardingPlayerTest {
         val first = Song("1", "One", "Artist", "", 180L)
         val second = Song("2", "Two", "Artist", "", 180L)
         queueManager.setQueue(listOf(first, second), 0)
-        val listener = QueueSyncListener(queueManager)
+        val listener = QueueSyncListener(queueManager, mockk(relaxed = true))
 
         listener.onMediaItemTransition(
             MediaItem.Builder().setMediaId("2").build(),
