@@ -185,11 +185,13 @@ class BackgroundPlaybackNavigator @Inject constructor(
                     }
                 } catch (error: TimeoutCancellationException) {
                     Log.w(TAG, "BackgroundNav: transition timed out", error)
+                    playbackLogManager.log("PAUSA", "WARN", "origen=timeout-navegacion")
                     playerRepository.pause()
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (error: Exception) {
                     Log.w(TAG, "BackgroundNav: transition failed", error)
+                    playbackLogManager.log("PAUSA", "WARN", "origen=timeout-navegacion-generico")
                     playerRepository.pause()
                 }
             }
@@ -250,6 +252,7 @@ class BackgroundPlaybackNavigator @Inject constructor(
 
             when (result) {
                 is ResolveResult.NetworkError -> {
+                    playbackLogManager.log("PAUSA", "WARN", "origen=fallo-red-resolver")
                     playerRepository.pause()
                     playbackLogManager.log("NAVEGACION", "ERROR", "Sin red para cargar '${nextSong.title}'")
                     queueManager.skipToIndex(installedIndex)
@@ -266,18 +269,40 @@ class BackgroundPlaybackNavigator @Inject constructor(
                         playerRepository.prepare(result.url, nextSong)
                         installedIndex = queueManager.currentIndex.value
                         playerRepository.play()
-                        playerRepository.awaitPlaybackStarted(nextSong.id)
+                        try {
+                            playerRepository.awaitPlaybackStarted(nextSong.id)
+                        } catch (timeoutErr: Exception) {
+                            val errMsg = timeoutErr.message.orEmpty()
+                            val currentId = playerRepository.currentMediaId()
+                            if ((timeoutErr is TimeoutCancellationException || errMsg.contains("timeout") || errMsg.contains("timed out") || errMsg.contains("15 s")) &&
+                                currentId == nextSong.id) {
+                                playbackLogManager.log("PAUSA", "WARN", "origen=reintento-play-tras-timeout")
+                                playerRepository.play()
+                                return@withLock
+                            } else {
+                                throw timeoutErr
+                            }
+                        }
                         Log.d(TAG, "BackgroundNav: playing next '${nextSong.title}'")
                         return@withLock
                     } catch (cancelled: CancellationException) {
                         throw cancelled
                     } catch (error: Exception) {
+                        val errMsg = error.message.orEmpty()
+                        if (errMsg.contains("La canción cambió durante la carga")) {
+                            playbackLogManager.log("PAUSA", "WARN", "origen=omitida-cambio-de-cancion")
+                            return@withLock
+                        }
                         if (NetworkErrorClassifier.isNetworkError(error, error.message)) {
+                            playbackLogManager.log("PAUSA", "WARN", "origen=fallo-red-reproducir")
                             playerRepository.pause()
                             playbackLogManager.log("NAVEGACION", "ERROR", "Sin red para cargar '${nextSong.title}'")
                             queueManager.skipToIndex(installedIndex)
                             return@withLock
+                        } else {
+                            playbackLogManager.log("PAUSA", "WARN", "origen=fallo-no-red-reproducir")
                         }
+                        playbackLogManager.log("NAVEGACION", "WARN", "Fallo al iniciar '${nextSong.title}': ${error::class.java.simpleName} - ${error.message}")
                         playerRepository.pause()
                         Log.w(TAG, "BackgroundNav: failed '${nextSong.title}'", error)
                         playbackLogManager.log("NAVEGACION", "WARN", "Sin fuente para '${nextSong.title}'")
@@ -320,6 +345,7 @@ class BackgroundPlaybackNavigator @Inject constructor(
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Exception) {
+            playbackLogManager.log("PAUSA", "WARN", "origen=otro")
             playerRepository.pause()
             queueManager.skipToIndex(installedIndex)
             Log.w(TAG, "BackgroundNav: failed previous '${previousSong.title}'", error)

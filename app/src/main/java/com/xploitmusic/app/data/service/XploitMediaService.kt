@@ -502,7 +502,10 @@ class XploitMediaService : MediaLibraryService() {
                     playbackLogManager.log("PREFETCH", "INFO", "Restauración: prefetch iniciado para la siguiente canción")
                     backgroundPlaybackNavigator.prefetchNextTrack()
                 }
-                if (pendingResumeShouldPlay) player.play() else player.pause()
+                if (pendingResumeShouldPlay) player.play() else {
+                    playbackLogManager.log("PAUSA", "WARN", "origen=pendiente-reanudacion-pausa")
+                    player.pause()
+                }
                 pendingResumption = null
                 pendingResumeShouldPlay = false
             } catch (cancelled: CancellationException) {
@@ -510,6 +513,7 @@ class XploitMediaService : MediaLibraryService() {
             } catch (error: Exception) {
                 android.util.Log.w("XploitDebug", "Saved playback remains available for retry", error)
                 if (player.currentMediaItem?.mediaId == song.id) {
+                    playbackLogManager.log("PAUSA", "WARN", "origen=pendiente-reanudacion-error")
                     player.pause()
                     finishFailedResumption()
                 }

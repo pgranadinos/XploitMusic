@@ -224,6 +224,48 @@ class BackgroundPlaybackNavigatorTest {
     }
 
     @Test
+    fun `La cancion cambio durante la carga no pausa el reproductor`() = runTest {
+        val s1 = song("1")
+        val s2 = song("2")
+        queueManager.setQueue(listOf(s1, s2), 0)
+        coEvery { getAudioStream("2") } returns Resource.Success("https://audio/2")
+        coEvery { playerRepository.awaitPlaybackStarted("2") } throws IllegalStateException("La canción cambió durante la carga")
+
+        navigator.navigateNext()
+        runCurrent()
+
+        coVerify(exactly = 0) { playerRepository.pause() }
+    }
+
+    @Test
+    fun `Excepcion generica si pausa`() = runTest {
+        val s1 = song("1")
+        val s2 = song("2")
+        queueManager.setQueue(listOf(s1, s2), 0)
+        coEvery { getAudioStream("2") } returns Resource.Success("https://audio/2")
+        coEvery { playerRepository.awaitPlaybackStarted("2") } throws RuntimeException("x")
+
+        navigator.navigateNext()
+        runCurrent()
+
+        coVerify { playerRepository.pause() }
+    }
+
+    @Test
+    fun `timeout error on same song retries play and does not pause`() = runTest {
+        queueManager.setQueue(listOf(song("1"), song("2")), 0)
+        coEvery { getAudioStream("2") } returns Resource.Success("https://audio/2")
+        coEvery { playerRepository.awaitPlaybackStarted("2") } throws RuntimeException("timeout of 15 s reached")
+        coEvery { playerRepository.currentMediaId() } returns "2"
+
+        navigator.requestAutomaticNext()
+        runCurrent()
+
+        coVerify(atLeast = 1) { playerRepository.play() }
+        coVerify(exactly = 0) { playerRepository.pause() }
+    }
+
+    @Test
     fun `prefetch reintenta tras fallo de red y se cancela al cambiar de cancion`() = runTest {
         val s1 = song("1")
         val s2 = song("2")

@@ -33,4 +33,7 @@ interface PlayerRepository {
 
     /** Emits structured error information when ExoPlayer encounters a playback error */
     val playerError: Flow<PlayerError>
+
+    /** Returns the mediaId of the currently loaded MediaItem in the player controller, or null if none */
+    suspend fun currentMediaId(): String? = null
 }

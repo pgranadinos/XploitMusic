@@ -399,4 +399,8 @@ class PlayerRepositoryImpl @Inject constructor(
             repositoryScope.cancel()
         }
     }
+
+    override suspend fun currentMediaId(): String? = withContext(Dispatchers.Main) {
+        getController()?.currentMediaItem?.mediaId
+    }
 }
