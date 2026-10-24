@@ -9,6 +9,12 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -26,6 +32,11 @@ import javax.inject.Singleton
 class PlaybackLogManager @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
+    private val _currentNetworkType = MutableStateFlow("UNKNOWN")
+    val currentNetworkType: StateFlow<String> = _currentNetworkType.asStateFlow()
+
+    private val _networkEvents = MutableSharedFlow<String>(replay = 1, extraBufferCapacity = 16)
+    val networkEvents: SharedFlow<String> = _networkEvents.asSharedFlow()
     companion object {
         private const val TAG = "XploitPlaybackAudit"
         private const val LOG_DIR = "logs"
@@ -180,21 +191,45 @@ class PlaybackLogManager @Inject constructor(
             connectivityManager.registerNetworkCallback(request, object : android.net.ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: android.net.Network) {
                     val caps = connectivityManager.getNetworkCapabilities(network)
+                    val isValidated = caps?.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
                     val typeStr = when {
                         caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) == true -> "Wi-Fi"
                         caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) == true -> "Datos móviles"
                         caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET) == true -> "Ethernet"
                         else -> "Red conectada"
                     }
-                    log("NETWORK", "INFO", "Estado de red cambiado: $typeStr")
+                    _currentNetworkType.value = typeStr
+                    _networkEvents.tryEmit(typeStr)
+                    log("NETWORK", "INFO", "Estado de red cambiado: $typeStr (validada=$isValidated)")
                 }
 
                 override fun onLost(network: android.net.Network) {
+                    _currentNetworkType.value = "Sin red"
+                    _networkEvents.tryEmit("Sin red")
                     log("NETWORK", "WARN", "Estado de red cambiado: Sin red (Desconectado)")
                 }
             })
         } catch (e: Exception) {
             Log.w(TAG, "Network monitoring registration failed: ${e.message}")
+        }
+    }
+
+    fun logAudioOutputRoute() {
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager ?: return
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+            val devices = audioManager.getDevices(android.media.AudioManager.GET_DEVICES_OUTPUTS)
+            val routeStr = devices.mapNotNull { dev ->
+                when (dev.type) {
+                    android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "A2DP (${dev.productName})"
+                    android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "SCO (${dev.productName})"
+                    android.media.AudioDeviceInfo.TYPE_BLE_HEADSET, android.media.AudioDeviceInfo.TYPE_BLE_SPEAKER -> "BLE (${dev.productName})"
+                    android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "Altavoz"
+                    android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET, android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES -> "Auriculares"
+                    else -> null
+                }
+            }.distinct().joinToString(", ").ifBlank { "Altavoz" }
+
+            log("AUDIO_OUTPUT", "INFO", "Salida de audio al iniciar canción: $routeStr")
         }
     }
 

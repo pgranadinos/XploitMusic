@@ -23,10 +23,12 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
@@ -38,7 +40,7 @@ import javax.inject.Inject
 import com.xploitmusic.app.domain.model.PlaybackState
 import com.xploitmusic.app.domain.model.RepeatMode
 
-@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class, kotlinx.coroutines.FlowPreview::class)
 @HiltViewModel
 class PlayerViewModel @Inject constructor(
     private val playerRepository: PlayerRepository,
@@ -60,10 +62,12 @@ class PlayerViewModel @Inject constructor(
     companion object {
         private const val TAG = "XploitDebug"
         private const val MAX_CONSECUTIVE_AUTO_SKIPS = 5
+        const val MSG_NO_INTERNET = "Sin conexión a internet — la reproducción se reanudará al reconectar."
     }
 
     private val _currentSong = MutableStateFlow<Song?>(null)
     val currentSong = _currentSong.asStateFlow()
+    private var activeStreamSong: Song? = null
     private val _sessionChecked = MutableStateFlow(false)
     val sessionChecked = _sessionChecked.asStateFlow()
 
@@ -242,39 +246,111 @@ class PlayerViewModel @Inject constructor(
 
         // Listen for ExoPlayer errors (network failures, decode errors, etc.)
         viewModelScope.launch {
-            playerRepository.playerError.collect { errorMsg ->
-                if (errorMsg != null) {
-                    Log.e(TAG, "PlayerVM: Player error received: $errorMsg")
-                    val currentSong = _currentSong.value
-                    if (currentSong != null && currentSongRetryCount < 2 && (errorMsg.contains("IO_BAD_HTTP_STATUS") || errorMsg.contains("Source error") || errorMsg.contains("HTTP") || errorMsg.contains("403"))) {
-                        val capturedGen = _playGeneration
-                        val capturedSongId = currentSong.id
-                        val savedPosition = currentPosition.value
+            playerRepository.playerError.collect { playerErr ->
+                val errorMsg = playerErr.message
+                val code = playerErr.code
+                val codeName = playerErr.codeName
+                Log.e(TAG, "PlayerVM: Player error received — code=$code ($codeName), msg=$errorMsg")
+                playbackLogManager.log("PLAYER_VM", "INFO", "Error recibido en ViewModel: code=$code ($codeName)")
 
-                        currentSongRetryCount++
-                        pendingResumePositionMs = if (savedPosition > 1000L) savedPosition else null
-                        pendingResumePositionSongId = capturedSongId
+                val currentSong = activeStreamSong ?: _currentSong.value
 
-                        streamRepository.invalidateStream(capturedSongId)
+                // 1. If device is completely offline ("Sin red"), pause without consuming retries, invalidating stream or auto-skipping!
+                if (playbackLogManager.currentNetworkType.value == "Sin red") {
+                    val savedPosition = currentPosition.value
+                    pendingResumePositionMs = if (savedPosition > 1000L) savedPosition else null
+                    pendingResumePositionSongId = currentSong?.id
+                    _errorMessage.value = MSG_NO_INTERNET
+                    _playbackState.value = PlaybackState.Error(MSG_NO_INTERNET)
+                    playbackLogManager.log("PLAYBACK", "WARN", "Reproducción pausada por falta de red en '${currentSong?.title}' a los ${savedPosition}ms")
+                    return@collect
+                }
 
-                        Log.w(TAG, "PlayerVM: 🔄 Stream expired or HTTP error for '${currentSong.title}'. Retrying fetch (attempt $currentSongRetryCount)...")
-                        playbackLogManager.log("PLAYBACK", "WARN", "Retrying stream fetch for song '${currentSong.title}' ($capturedSongId) due to error: $errorMsg (attempt $currentSongRetryCount)")
+                val isRetryableCode = code == androidx.media3.common.PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ||
+                    code == androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
+                    code == androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ||
+                    code == androidx.media3.common.PlaybackException.ERROR_CODE_IO_UNSPECIFIED ||
+                    codeName.contains("403") ||
+                    errorMsg.contains("Source error") ||
+                    errorMsg.contains("HTTP")
 
-                        viewModelScope.launch {
-                            if (_playGeneration == capturedGen && _currentSong.value?.id == capturedSongId) {
-                                playInternal(currentSong, capturedGen, isRetry = true)
-                            } else {
-                                Log.d(TAG, "PlayerVM: Playback target or generation changed during retry — ignoring retry.")
-                            }
+                playbackLogManager.log(
+                    "DEBUG",
+                    "INFO",
+                    "DEBUG_DIAGNOSTIC | code=$code ($codeName) | msg='$errorMsg' | songId=${currentSong?.id} | retryCount=$currentSongRetryCount | gen=$_playGeneration | isRetryable=$isRetryableCode"
+                )
+
+                if (currentSong != null && currentSongRetryCount < 2 && isRetryableCode) {
+                    val capturedGen = _playGeneration
+                    val capturedSongId = currentSong.id
+                    val savedPosition = currentPosition.value
+
+                    currentSongRetryCount++
+                    pendingResumePositionMs = if (savedPosition > 1000L) savedPosition else null
+                    pendingResumePositionSongId = capturedSongId
+
+                    streamRepository.invalidateStream(capturedSongId)
+
+                    Log.w(TAG, "PlayerVM: 🔄 Stream error for '${currentSong.title}' ($codeName). Retrying fetch (attempt $currentSongRetryCount)...")
+                    playbackLogManager.log("PLAYBACK", "WARN", "Retrying stream fetch for song '${currentSong.title}' ($capturedSongId) due to error $codeName ($errorMsg) (attempt $currentSongRetryCount)")
+
+                    viewModelScope.launch {
+                        delay(currentSongRetryCount * 1000L) // Increasing backoff between retries (1s, 2s)
+                        if (_playGeneration == capturedGen && _currentSong.value?.id == capturedSongId) {
+                            playInternal(currentSong, capturedGen, isRetry = true)
+                        } else {
+                            Log.d(TAG, "PlayerVM: Playback target or generation changed during retry — ignoring retry.")
                         }
-                    } else {
-                        val friendlyMsg = makeFriendlyError(errorMsg)
-                        _errorMessage.value = friendlyMsg
-                        _playbackState.value = PlaybackState.Error(friendlyMsg)
-                        triggerAutoSkip()
                     }
+                } else {
+                    val friendlyMsg = makeFriendlyError(errorMsg)
+                    _errorMessage.value = friendlyMsg
+                    _playbackState.value = PlaybackState.Error(friendlyMsg)
+                    triggerAutoSkip()
                 }
             }
+        }
+
+        // Observe network changes with 2.5s debounce window before deciding
+        viewModelScope.launch {
+            var previousNetworkType = playbackLogManager.currentNetworkType.value
+            playbackLogManager.networkEvents
+                .debounce(2500L)
+                .collect { newNetworkType ->
+                    val song = activeStreamSong ?: _currentSong.value
+                    val state = _playbackState.value
+                    val isPlayingOrBuffering = isPlaying.value || state is PlaybackState.Playing || state is PlaybackState.Buffering
+                    val isWaitingForNetwork = pendingResumePositionSongId == song?.id && (state is PlaybackState.Error || !isPlaying.value)
+
+                    playbackLogManager.log(
+                        "DEBUG",
+                        "INFO",
+                        "DEBUG_DIAGNOSTIC_NETWORK | previous='$previousNetworkType' | new='$newNetworkType' | songId=${song?.id} | isPlaying=${isPlaying.value} | playbackState=$state | waitingForNet=$isWaitingForNetwork"
+                    )
+
+                    if (song != null && previousNetworkType != "UNKNOWN" && previousNetworkType != newNetworkType) {
+                        if (newNetworkType == "Sin red") {
+                            // Offline - network loss handling
+                        } else if (isWaitingForNetwork || state is PlaybackState.Error) {
+                            // Only invalidate and re-fetch if in Error or waiting state, strictly checking song match for saved position
+                            val savedPosition = if (pendingResumePositionSongId == song.id) (pendingResumePositionMs ?: currentPosition.value) else 0L
+                            val capturedGen = _playGeneration
+                            val capturedSongId = song.id
+
+                            pendingResumePositionMs = if (savedPosition > 1000L) savedPosition else null
+                            pendingResumePositionSongId = capturedSongId
+
+                            streamRepository.invalidateStream(capturedSongId)
+                            playbackLogManager.log("NETWORK", "WARN", "Red restablecida ($previousNetworkType -> $newNetworkType). Resolviendo stream fresco para '${song.title}' desde ${savedPosition}ms")
+
+                            playInternal(song, capturedGen, isRetry = true)
+                        } else if (isPlayingOrBuffering) {
+                            // Active playback: do NOT invalidate stream or restart playback
+                            playbackLogManager.log("NETWORK", "INFO", "Red cambió a $newNetworkType con reproducción activa; se mantiene el buffer")
+                        }
+                    }
+                    previousNetworkType = newNetworkType
+                }
         }
     }
 
@@ -515,11 +591,13 @@ class PlayerViewModel @Inject constructor(
             pendingResumePositionMs = null
             pendingResumePositionSongId = null
         }
+        activeStreamSong = song
         // OPTIMISTIC UPDATE: Set _currentSong immediately so the UI shows the song
         // while we fetch the stream URL. ExoPlayer transition will confirm later.
         _currentSong.value = song
         _lyrics.value = emptyList()
         loadLyrics(song)
+        playbackLogManager.logAudioOutputRoute()
         Log.d(TAG, "PlayerVM: playInternal command for '${song.title}' gen=$generation")
         val bufferStartTime = System.currentTimeMillis()
         analyticsLogger.logPlayAttempt(song.id, "PlayerViewModel")
@@ -604,6 +682,16 @@ class PlayerViewModel @Inject constructor(
             return
         }
 
+        // ── ONLINE SONG: Pause without auto-skipping if network is completely disconnected ──
+        if (playbackLogManager.currentNetworkType.value == "Sin red") {
+            val friendlyMsg = "Sin conexión a internet — la reproducción se reanudará al reconectar."
+            pendingResumePositionSongId = song.id
+            _errorMessage.value = friendlyMsg
+            _playbackState.value = PlaybackState.Error(friendlyMsg)
+            playbackLogManager.log("PLAYBACK", "WARN", "Canción '${song.title}' solicitada sin red. Pausando en espera de conexión.")
+            return
+        }
+
         // ── ONLINE SONG: full fetch pipeline ──
 
         // Launch background tasks independently (fire-and-forget in viewModelScope)
@@ -677,10 +765,26 @@ class PlayerViewModel @Inject constructor(
                     }
                     Log.e(TAG, "PlayerVM: ❌ Stream error: ${result.message}")
                     _ignoringTransition = false
-                    _errorMessage.value = result.message ?: "Error al obtener audio. Saltando..."
-                    _playbackState.value = PlaybackState.Error(result.message ?: "Error")
-                    analyticsLogger.logPlayError(song.id, result.message ?: "Error stream", 0L)
-                    triggerAutoSkip()
+                    val errMsg = result.message.orEmpty()
+                    val isNetworkError = errMsg.contains("No se pudo resolver") ||
+                        errMsg.contains("Network or timeout") ||
+                        errMsg.contains("Unable to resolve host") ||
+                        errMsg.contains("Sin conexión") ||
+                        errMsg.contains("timeout") ||
+                        errMsg.contains("timed out")
+
+                    if (isNetworkError) {
+                        val friendlyMsg = "Sin conexión a internet — la reproducción se reanudará al reconectar."
+                        pendingResumePositionSongId = song.id
+                        _errorMessage.value = friendlyMsg
+                        _playbackState.value = PlaybackState.Error(friendlyMsg)
+                        playbackLogManager.log("PLAYBACK", "WARN", "Error de red al extraer stream de '${song.title}'. Pausando en espera de conexión.")
+                    } else {
+                        _errorMessage.value = result.message ?: "Error al obtener audio. Saltando..."
+                        _playbackState.value = PlaybackState.Error(result.message ?: "Error")
+                        analyticsLogger.logPlayError(song.id, result.message ?: "Error stream", 0L)
+                        triggerAutoSkip()
+                    }
                 }
                 else -> {
                     if (_playGeneration != generation) { _ignoringTransition = false; return }
@@ -697,9 +801,20 @@ class PlayerViewModel @Inject constructor(
             }
             Log.e(TAG, "PlayerVM: ❌ Exception in stream fetch: ${e.javaClass.simpleName}: ${e.message}", e)
             _ignoringTransition = false
-            val friendlyMsg = makeFriendlyError(e.localizedMessage ?: "Error desconocido")
-            _errorMessage.value = friendlyMsg
-            _playbackState.value = PlaybackState.Error(friendlyMsg)
+            val isNetExc = e is java.io.IOException
+            if (isNetExc) {
+                val friendlyMsg = "Sin conexión a internet — la reproducción se reanudará al reconectar."
+                pendingResumePositionSongId = song.id
+                _errorMessage.value = friendlyMsg
+                _playbackState.value = PlaybackState.Error(friendlyMsg)
+                playbackLogManager.log("PLAYBACK", "WARN", "Excepción de red al extraer stream de '${song.title}'. Pausando en espera de conexión.")
+            } else {
+                val friendlyMsg = makeFriendlyError(e.message ?: "Error al cargar audio")
+                _errorMessage.value = friendlyMsg
+                _playbackState.value = PlaybackState.Error(friendlyMsg)
+                analyticsLogger.logPlayError(song.id, e.message ?: "Exception stream", 0L)
+                triggerAutoSkip()
+            }
         } finally {
             // If still LOADING (no success/error set above), reset to IDLE
             if (_playbackState.value is PlaybackState.Buffering) {
@@ -829,6 +944,8 @@ class PlayerViewModel @Inject constructor(
     fun togglePlayPause() {
         viewModelScope.launch {
             if (isPlaying.value) {
+                pendingResumePositionMs = null
+                pendingResumePositionSongId = null
                 playerRepository.pause()
             } else {
                 if (_playbackState.value is PlaybackState.Idle && _currentSong.value != null) {
