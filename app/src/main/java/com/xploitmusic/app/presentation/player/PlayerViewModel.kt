@@ -67,6 +67,7 @@ class PlayerViewModel @Inject constructor(
 
     private val _currentSong = MutableStateFlow<Song?>(null)
     val currentSong = _currentSong.asStateFlow()
+    private var activeStreamSong: Song? = null
     private val _sessionChecked = MutableStateFlow(false)
     val sessionChecked = _sessionChecked.asStateFlow()
 
@@ -250,8 +251,9 @@ class PlayerViewModel @Inject constructor(
                 val code = playerErr.code
                 val codeName = playerErr.codeName
                 Log.e(TAG, "PlayerVM: Player error received — code=$code ($codeName), msg=$errorMsg")
+                playbackLogManager.log("PLAYER_VM", "INFO", "Error recibido en ViewModel: code=$code ($codeName)")
 
-                val currentSong = _currentSong.value
+                val currentSong = activeStreamSong ?: _currentSong.value
 
                 // 1. If device is completely offline ("Sin red"), pause without consuming retries, invalidating stream or auto-skipping!
                 if (playbackLogManager.currentNetworkType.value == "Sin red") {
@@ -315,7 +317,7 @@ class PlayerViewModel @Inject constructor(
             playbackLogManager.networkEvents
                 .debounce(2500L)
                 .collect { newNetworkType ->
-                    val song = _currentSong.value
+                    val song = activeStreamSong ?: _currentSong.value
                     val state = _playbackState.value
                     val isPlayingOrBuffering = isPlaying.value || state is PlaybackState.Playing || state is PlaybackState.Buffering
                     val isWaitingForNetwork = pendingResumePositionSongId == song?.id && (state is PlaybackState.Error || !isPlaying.value)
@@ -589,6 +591,7 @@ class PlayerViewModel @Inject constructor(
             pendingResumePositionMs = null
             pendingResumePositionSongId = null
         }
+        activeStreamSong = song
         // OPTIMISTIC UPDATE: Set _currentSong immediately so the UI shows the song
         // while we fetch the stream URL. ExoPlayer transition will confirm later.
         _currentSong.value = song

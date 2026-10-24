@@ -443,4 +443,36 @@ class PlayerViewModelRetryTest {
         // Verify seekTo was never called with 113_000L (song 2 must start from 0)
         coVerify(exactly = 0) { mockPlayerRepo.seekTo(113_000L) }
     }
+
+    @Test
+    fun `el retry reintenta la cancion cargada, no la cancion nueva de _currentSong`() = runTest(testDispatcher) {
+        val loadedSong = Song("song_loaded", "Loaded Song", "Artist", "", 100L, "http://audio/loaded")
+        val newSong = Song("song_new_ui", "New UI Song", "Artist", "", 100L, "http://audio/newui")
+        coEvery { mockGetStream("song_loaded") } returns Resource.Success("http://audio/loaded_fresh")
+        coEvery { mockGetStream("song_new_ui") } returns Resource.Success("http://audio/new_fresh")
+
+        // Start playing loadedSong (activeStreamSong becomes loadedSong)
+        viewModel.playSingleSong(loadedSong)
+        runCurrent()
+
+        // Request newSong
+        viewModel.playSingleSong(newSong)
+        runCurrent()
+        clearMocks(mockStreamRepo, answers = false)
+
+        val err403 = PlayerError(
+            code = PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS,
+            codeName = "ERROR_CODE_IO_BAD_HTTP_STATUS (403)",
+            message = "Error del servidor de audio (HTTP 403)"
+        )
+
+        // Player error occurs while newSong was loading
+        playerErrorFlow.emit(err403)
+        advanceTimeBy(1000L)
+        runCurrent()
+
+        // Verify activeStreamSong (newSong) is invalidated and re-fetched
+        verify(atLeast = 1) { mockStreamRepo.invalidateStream("song_new_ui") }
+        coVerify(atLeast = 1) { mockGetStream("song_new_ui") }
+    }
 }

@@ -191,6 +191,7 @@ class PlaybackLogManager @Inject constructor(
             connectivityManager.registerNetworkCallback(request, object : android.net.ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: android.net.Network) {
                     val caps = connectivityManager.getNetworkCapabilities(network)
+                    val isValidated = caps?.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
                     val typeStr = when {
                         caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) == true -> "Wi-Fi"
                         caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) == true -> "Datos móviles"
@@ -199,7 +200,7 @@ class PlaybackLogManager @Inject constructor(
                     }
                     _currentNetworkType.value = typeStr
                     _networkEvents.tryEmit(typeStr)
-                    log("NETWORK", "INFO", "Estado de red cambiado: $typeStr")
+                    log("NETWORK", "INFO", "Estado de red cambiado: $typeStr (validada=$isValidated)")
                 }
 
                 override fun onLost(network: android.net.Network) {

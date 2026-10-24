@@ -45,7 +45,8 @@ import kotlin.coroutines.resume
 @Singleton
 class PlayerRepositoryImpl @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val offlineMediaFactory: OfflineAwareMediaSourceFactory
+    private val offlineMediaFactory: OfflineAwareMediaSourceFactory,
+    private val playbackLogManager: com.xploitmusic.app.core.util.PlaybackLogManager
 ) : PlayerRepository {
 
     companion object {
@@ -381,6 +382,7 @@ class PlayerRepositoryImpl @Inject constructor(
                     message = msg
                 )
                 Log.e(TAG, "PlayerRepo: onPlayerError — code=${error.errorCode} (${error.errorCodeName}), msg=$msg", error)
+                playbackLogManager.log("PLAYER_REPO", "ERROR", "Error recibido en repositorio: code=${error.errorCode} (${error.errorCodeName})")
                 trySend(playerErrorObj)
 
                 // Observe only. Navigation owns retries; replaying here races with skips.
