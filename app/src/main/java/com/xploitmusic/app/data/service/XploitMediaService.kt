@@ -171,6 +171,12 @@ internal class NotificationForwardingPlayer(
     }
 }
 
+internal fun posicionAGuardar(state: Int, positionMs: Long, durationMs: Long): Long {
+    if (state == Player.STATE_ENDED) return 0L
+    if (durationMs > 0 && positionMs >= durationMs - 2000L) return 0L
+    return positionMs
+}
+
 /** Keeps the logical queue aligned with the item Media3 actually selected. */
 internal class QueueSyncListener(
     private val queueManager: QueueManager,
@@ -180,7 +186,7 @@ internal class QueueSyncListener(
     override fun onMediaItemTransition(mediaItem: androidx.media3.common.MediaItem?, reason: Int) {
         val mediaId = mediaItem?.mediaId?.takeIf { it.isNotBlank() } ?: return
         val title = mediaItem.mediaMetadata?.title?.toString() ?: mediaId
-        playbackLogManager.log("NAVEGACION", "INFO", "Transición a '$title'")
+        playbackLogManager.log("TRANSICION", "INFO", "Transición a '$title'")
         val index = queueManager.queue.value.indexOfFirst { it.id == mediaId }
         if (index >= 0 && index != queueManager.currentIndex.value) {
             queueManager.skipToIndex(index)
@@ -241,10 +247,8 @@ class XploitMediaService : MediaLibraryService() {
         val index = queueManager.currentIndex.value
         // A pending skip may have changed the queue index before the player.
         if (songs.getOrNull(index)?.id != song.id) return
-        if (player.playbackState == Player.STATE_ENDED) return
         val durationMs = song.durationSeconds * 1000L
-        val currentPos = player.currentPosition
-        if (durationMs > 0 && currentPos >= durationMs - 2000L) return
+        val currentPos = posicionAGuardar(player.playbackState, player.currentPosition, durationMs)
         val snapshot = SavedPlaybackSession(songs, index, currentPos)
         sessionStore.save(snapshot)
         if (!player.playWhenReady && player.playbackState == Player.STATE_READY) {
@@ -270,12 +274,11 @@ class XploitMediaService : MediaLibraryService() {
             player.playWhenReady = false
             val song = saved.songs.getOrNull(saved.index)
             val durationMs = (song?.durationSeconds ?: 0L) * 1000L
-            val safePositionMs = if (durationMs > 0 && saved.positionMs >= durationMs - 2000L) {
-                playbackLogManager.log("NAVEGACION", "INFO", "Restauración: '${song?.title}' había terminado (${saved.positionMs}ms / ${durationMs}ms); reiniciando posición a 0ms")
-                0L
+            val safePositionMs = posicionAGuardar(-1, saved.positionMs, durationMs)
+            if (safePositionMs == 0L && saved.positionMs > 0L) {
+                playbackLogManager.log("RESTAURACION", "INFO", "Restauración: '${song?.title}' había terminado (${saved.positionMs}ms / ${durationMs}ms); reiniciando posición a 0ms")
             } else {
-                playbackLogManager.log("NAVEGACION", "INFO", "Restauración de sesión para '${song?.title}' en ${saved.positionMs}ms")
-                saved.positionMs
+                playbackLogManager.log("RESTAURACION", "INFO", "Restauración de sesión para '${song?.title}' en ${saved.positionMs}ms")
             }
             player.setMediaItem(resumptionPlaceholderItem(saved), safePositionMs)
         } catch (cancelled: CancellationException) {
@@ -634,12 +637,11 @@ class XploitMediaService : MediaLibraryService() {
                         pendingResumption = saved
                         val song = saved.songs.getOrNull(saved.index)
                         val durationMs = (song?.durationSeconds ?: 0L) * 1000L
-                        val safePositionMs = if (durationMs > 0 && saved.positionMs >= durationMs - 2000L) {
-                            playbackLogManager.log("NAVEGACION", "INFO", "Restauración (Bluetooth): '${song?.title}' había terminado (${saved.positionMs}ms / ${durationMs}ms); reiniciando posición a 0ms")
-                            0L
+                        val safePositionMs = posicionAGuardar(-1, saved.positionMs, durationMs)
+                        if (safePositionMs == 0L && saved.positionMs > 0L) {
+                            playbackLogManager.log("RESTAURACION", "INFO", "Restauración (Bluetooth): '${song?.title}' había terminado (${saved.positionMs}ms / ${durationMs}ms); reiniciando posición a 0ms")
                         } else {
-                            playbackLogManager.log("NAVEGACION", "INFO", "Restauración de sesión (Bluetooth) para '${song?.title}' en ${saved.positionMs}ms")
-                            saved.positionMs
+                            playbackLogManager.log("RESTAURACION", "INFO", "Restauración de sesión (Bluetooth) para '${song?.title}' en ${saved.positionMs}ms")
                         }
                         result.set(MediaSession.MediaItemsWithStartPosition(
                             listOf(resumptionPlaceholderItem(saved)), 0, safePositionMs))
