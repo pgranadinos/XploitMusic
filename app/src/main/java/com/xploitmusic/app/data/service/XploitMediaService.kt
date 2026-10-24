@@ -480,6 +480,7 @@ class XploitMediaService : MediaLibraryService() {
                 // Begin resolving the next item before this track can finish.
                 // The current track remains paused unless Play was actually requested.
                 if (!skipHandler.hasActiveDelegate()) {
+                    playbackLogManager.log("PREFETCH", "INFO", "Restauración: prefetch iniciado para la siguiente canción")
                     backgroundPlaybackNavigator.prefetchNextTrack()
                 }
                 if (pendingResumeShouldPlay) player.play() else player.pause()

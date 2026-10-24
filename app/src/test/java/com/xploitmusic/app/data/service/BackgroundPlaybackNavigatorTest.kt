@@ -53,13 +53,15 @@ class BackgroundPlaybackNavigatorTest {
         streamRepository = mockk()
         offlineManager = mockk()
         queueManager = QueueManagerImpl()
+        val mockLogManager: com.xploitmusic.app.core.util.PlaybackLogManager = mockk(relaxed = true)
         navigator = BackgroundPlaybackNavigator(
             playerRepository,
             queueManager,
             favoritesRepository,
             getAudioStream,
             streamRepository,
-            offlineManager
+            offlineManager,
+            mockLogManager
         )
         coEvery { offlineManager.getOfflineFilePath(any()) } returns null
     }
@@ -198,5 +200,46 @@ class BackgroundPlaybackNavigatorTest {
         runCurrent()
         assertThat(queueManager.currentTrack.value?.id).isEqualTo("2")
         coVerify { playerRepository.pause() }
+    }
+
+    @Test
+    fun `fallo de red no salta canciones`() = runTest {
+        val s1 = song("1")
+        val s2 = song("2")
+        val s3 = song("3")
+        queueManager.setQueue(listOf(s1, s2, s3), 0)
+
+        // getAudioStream for s2 fails with network error
+        coEvery { getAudioStream("2") } returns Resource.Error("Sin conexión a internet")
+
+        navigator.navigateNext()
+        runCurrent()
+        advanceTimeBy(3000L)
+        runCurrent()
+
+        // Queue index must remain at s1 (installedIndex), player paused, no skip to s3
+        assertThat(queueManager.currentTrack.value).isEqualTo(s1)
+        coVerify { playerRepository.pause() }
+        coVerify(exactly = 0) { getAudioStream("3") }
+    }
+
+    @Test
+    fun `prefetch reintenta tras fallo de red y se cancela al cambiar de cancion`() = runTest {
+        val s1 = song("1")
+        val s2 = song("2")
+        val s3 = song("3")
+        queueManager.setQueue(listOf(s1, s2, s3), 0)
+
+        coEvery { getAudioStream("2") } returns Resource.Error("No se pudo resolver el servidor")
+
+        navigator.prefetchNextTrack()
+        runCurrent()
+
+        // Change next track before prefetch retry finishes
+        queueManager.skipToNext()
+        runCurrent()
+
+        // Pre-fetch for s2 should be cancelled and not queued
+        coVerify(exactly = 0) { playerRepository.addNextMediaItem(any(), s2) }
     }
 }

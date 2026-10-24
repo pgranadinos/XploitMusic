@@ -1,6 +1,7 @@
 package com.xploitmusic.app.data.service
 
 import android.util.Log
+import com.xploitmusic.app.core.util.PlaybackLogManager
 import com.xploitmusic.app.core.util.Resource
 import com.xploitmusic.app.data.repository.OfflineManager
 import com.xploitmusic.app.domain.model.Song
@@ -10,6 +11,7 @@ import com.xploitmusic.app.domain.repository.QueueManager
 import com.xploitmusic.app.domain.repository.StreamRepository
 import com.xploitmusic.app.domain.recommendation.SongRecommendationSelector
 import com.xploitmusic.app.domain.usecase.GetAudioStreamUseCase
+import com.xploitmusic.app.presentation.player.NetworkErrorClassifier
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -20,6 +22,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.flow.first
@@ -27,6 +30,12 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
 import javax.inject.Singleton
+
+internal sealed class ResolveResult {
+    data class Success(val url: String) : ResolveResult()
+    data class Unplayable(val reason: String) : ResolveResult()
+    data class NetworkError(val cause: Throwable?, val message: String) : ResolveResult()
+}
 
 /** Handles notification navigation after the UI lifecycle has ended. */
 @Singleton
@@ -36,21 +45,29 @@ class BackgroundPlaybackNavigator @Inject constructor(
     private val favoritesRepository: FavoritesRepository,
     private val getAudioStreamUseCase: GetAudioStreamUseCase,
     private val streamRepository: StreamRepository,
-    private val offlineManager: OfflineManager
+    private val offlineManager: OfflineManager,
+    private val playbackLogManager: PlaybackLogManager
 ) {
     companion object {
         private const val TAG = "XploitDebug"
         private const val MAX_UNPLAYABLE_SKIPS = 2
+
+        private const val PREFETCH_RETRY_DELAY_1_MS = 2_000L
+        private const val PREFETCH_RETRY_DELAY_2_MS = 5_000L
+        private const val PREFETCH_RETRY_DELAY_3_MS = 10_000L
+        private val PREFETCH_RETRY_DELAYS = listOf(PREFETCH_RETRY_DELAY_1_MS, PREFETCH_RETRY_DELAY_2_MS, PREFETCH_RETRY_DELAY_3_MS)
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val navigationMutex = Mutex()
     private var navigationJob: Job? = null
-    private val prefetchedSources = mutableMapOf<String, Deferred<String?>>()
+    private var prefetchRetryJob: Job? = null
+    private val prefetchedSources = mutableMapOf<String, Deferred<ResolveResult>>()
 
     /** Resolve the queued song before a car/headphone Next command needs it. */
     fun prefetchNextTrack() {
-        scope.launch {
+        prefetchRetryJob?.cancel()
+        prefetchRetryJob = scope.launch {
             val next = queueManager.peekNext()
             if (next == null) {
                 prefetchedSources.values.forEach { it.cancel() }
@@ -59,16 +76,13 @@ class BackgroundPlaybackNavigator @Inject constructor(
             }
             val existingPrefetch = prefetchedSources[next.id]
             if (existingPrefetch != null) {
-                // A source can resolve before the MediaController finishes connecting.
-                // Retry the enqueue on the next player event instead of treating the
-                // cached URL as proof that Media3 already has the item.
                 if (existingPrefetch.isCompleted) {
                     try {
-                        val source = existingPrefetch.await()?.takeIf { it.isNotBlank() }
-                        if (source == null) {
-                            forgetPrefetchedSource(next.id, existingPrefetch)
+                        val result = existingPrefetch.await()
+                        if (result is ResolveResult.Success) {
+                            enqueuePrefetchedNextTrack(next, result.url)
                         } else {
-                            enqueuePrefetchedNextTrack(next, source)
+                            forgetPrefetchedSource(next.id, existingPrefetch)
                         }
                     } catch (cancelled: CancellationException) {
                         currentCoroutineContext().ensureActive()
@@ -82,30 +96,57 @@ class BackgroundPlaybackNavigator @Inject constructor(
             }
             prefetchedSources.filterKeys { it != next.id }.values.forEach { it.cancel() }
             prefetchedSources.keys.retainAll(setOf(next.id))
-            val prefetchedSource = scope.async(Dispatchers.IO) {
-                resolveSourceUncached(next)
-            }
-            prefetchedSources[next.id] = prefetchedSource
-            try {
-                val source = prefetchedSource.await()?.takeIf { it.isNotBlank() }
-                if (source != null) {
-                    enqueuePrefetchedNextTrack(next, source)
-                } else {
-                    forgetPrefetchedSource(next.id, prefetchedSource)
-                    Log.w(TAG, "BackgroundNav: no source to prequeue for '${next.title}'")
+
+            var attempt = 0
+            while (attempt <= 3) {
+                if (queueManager.peekNext()?.id != next.id) return@launch
+
+                if (attempt > 0) {
+                    val delayMs = PREFETCH_RETRY_DELAYS.getOrElse(attempt - 1) { 10_000L }
+                    playbackLogManager.log("PREFETCH", "INFO", "Reintento $attempt/3 para '${next.title}'")
+                    delay(delayMs)
+                    if (queueManager.peekNext()?.id != next.id) return@launch
                 }
-            } catch (cancelled: CancellationException) {
-                currentCoroutineContext().ensureActive()
-                forgetPrefetchedSource(next.id, prefetchedSource)
-                Log.d(TAG, "BackgroundNav: prefetch superseded for '${next.title}'")
-            } catch (error: Exception) {
-                forgetPrefetchedSource(next.id, prefetchedSource)
-                Log.w(TAG, "BackgroundNav: prefetch failed for '${next.title}'", error)
+
+                val prefetchedSource = scope.async(Dispatchers.IO) {
+                    resolveSourceUncached(next)
+                }
+                prefetchedSources[next.id] = prefetchedSource
+
+                try {
+                    val result = prefetchedSource.await()
+                    when (result) {
+                        is ResolveResult.Success -> {
+                            enqueuePrefetchedNextTrack(next, result.url)
+                            return@launch
+                        }
+                        is ResolveResult.NetworkError -> {
+                            forgetPrefetchedSource(next.id, prefetchedSource)
+                            playbackLogManager.log("PREFETCH", "WARN", "No se pudo preparar la siguiente canción '${next.title}': ${result.message}")
+                            attempt++
+                        }
+                        is ResolveResult.Unplayable -> {
+                            forgetPrefetchedSource(next.id, prefetchedSource)
+                            playbackLogManager.log("PREFETCH", "WARN", "No se pudo preparar la siguiente canción '${next.title}': ${result.reason}")
+                            return@launch
+                        }
+                    }
+                } catch (cancelled: CancellationException) {
+                    currentCoroutineContext().ensureActive()
+                    forgetPrefetchedSource(next.id, prefetchedSource)
+                    Log.d(TAG, "BackgroundNav: prefetch superseded for '${next.title}'")
+                    return@launch
+                } catch (error: Exception) {
+                    forgetPrefetchedSource(next.id, prefetchedSource)
+                    Log.w(TAG, "BackgroundNav: prefetch failed for '${next.title}'", error)
+                    playbackLogManager.log("PREFETCH", "WARN", "No se pudo preparar la siguiente canción '${next.title}': ${error.message}")
+                    attempt++
+                }
             }
         }
     }
 
-    private fun forgetPrefetchedSource(songId: String, expected: Deferred<String?>) {
+    private fun forgetPrefetchedSource(songId: String, expected: Deferred<ResolveResult>) {
         if (prefetchedSources[songId] === expected) prefetchedSources.remove(songId)
     }
 
@@ -123,7 +164,10 @@ class BackgroundPlaybackNavigator @Inject constructor(
         }
 
     fun cancelPendingNavigation() {
-        scope.launch { navigationJob?.cancel() }
+        scope.launch {
+            prefetchRetryJob?.cancel()
+            navigationJob?.cancel()
+        }
     }
 
     private fun requestNavigation(automatic: Boolean = false, previous: Boolean = false) {
@@ -132,8 +176,6 @@ class BackgroundPlaybackNavigator @Inject constructor(
             navigationJob?.cancel()
             navigationJob = scope.launch {
                 try {
-                    // A complete stream-provider fallback pass can take ~24 s;
-                    // leave room for Media3 to buffer the selected source too.
                     withTimeout(40_000L) {
                         when {
                             previous -> navigatePrevious()
@@ -187,36 +229,64 @@ class BackgroundPlaybackNavigator @Inject constructor(
         try {
         repeat(MAX_UNPLAYABLE_SKIPS) {
             val nextSong = nextCandidate() ?: run {
+                playbackLogManager.log("NAVEGACION", "ERROR", "Navegación cancelada: ninguna canción de la cola tiene fuente")
                 queueManager.skipToIndex(installedIndex)
                 return@withLock
             }
             if (!attemptedIds.add(nextSong.id)) {
+                playbackLogManager.log("NAVEGACION", "ERROR", "Navegación cancelada: ciclo detectado en la cola")
                 queueManager.skipToIndex(installedIndex)
                 return@withLock
             }
 
-            val source = resolveSource(nextSong)
-            if (source == null) {
-                Log.w(TAG, "BackgroundNav: no playable source for '${nextSong.title}'")
-                return@repeat
+            var result = resolveSource(nextSong)
+
+            // Si falla por red, reintenta una vez tras 2s sin contar salto
+            if (result is ResolveResult.NetworkError) {
+                playbackLogManager.log("NAVEGACION", "WARN", "Error de red al resolver '${nextSong.title}'. Reintentando en 2s...")
+                delay(2000L)
+                result = resolveSourceUncached(nextSong)
             }
 
-            try {
-                currentCoroutineContext().ensureActive()
-                playerRepository.prepare(source, nextSong)
-                installedIndex = queueManager.currentIndex.value
-                playerRepository.play()
-                playerRepository.awaitPlaybackStarted(nextSong.id)
-                Log.d(TAG, "BackgroundNav: playing next '${nextSong.title}'")
-                return@withLock
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (error: Exception) {
-                playerRepository.pause()
-                Log.w(TAG, "BackgroundNav: failed '${nextSong.title}'", error)
+            when (result) {
+                is ResolveResult.NetworkError -> {
+                    playerRepository.pause()
+                    playbackLogManager.log("NAVEGACION", "ERROR", "Sin red para cargar '${nextSong.title}'")
+                    queueManager.skipToIndex(installedIndex)
+                    return@withLock
+                }
+                is ResolveResult.Unplayable -> {
+                    Log.w(TAG, "BackgroundNav: no playable source for '${nextSong.title}' (${result.reason})")
+                    playbackLogManager.log("NAVEGACION", "WARN", "Sin fuente para '${nextSong.title}'")
+                    return@repeat // Cuenta como salto para canciones no reproducibles
+                }
+                is ResolveResult.Success -> {
+                    try {
+                        currentCoroutineContext().ensureActive()
+                        playerRepository.prepare(result.url, nextSong)
+                        installedIndex = queueManager.currentIndex.value
+                        playerRepository.play()
+                        playerRepository.awaitPlaybackStarted(nextSong.id)
+                        Log.d(TAG, "BackgroundNav: playing next '${nextSong.title}'")
+                        return@withLock
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (error: Exception) {
+                        if (NetworkErrorClassifier.isNetworkError(error, error.message)) {
+                            playerRepository.pause()
+                            playbackLogManager.log("NAVEGACION", "ERROR", "Sin red para cargar '${nextSong.title}'")
+                            queueManager.skipToIndex(installedIndex)
+                            return@withLock
+                        }
+                        playerRepository.pause()
+                        Log.w(TAG, "BackgroundNav: failed '${nextSong.title}'", error)
+                        playbackLogManager.log("NAVEGACION", "WARN", "Sin fuente para '${nextSong.title}'")
+                    }
+                }
             }
         }
 
+        playbackLogManager.log("NAVEGACION", "ERROR", "Navegación cancelada: ninguna canción de la cola tiene fuente")
         queueManager.skipToIndex(installedIndex)
         } catch (cancelled: CancellationException) {
             queueManager.skipToIndex(installedIndex)
@@ -234,15 +304,15 @@ class BackgroundPlaybackNavigator @Inject constructor(
         }
 
         try {
-        val source = resolveSource(previousSong)
-        if (source == null) {
+        val result = resolveSource(previousSong)
+        if (result !is ResolveResult.Success) {
             queueManager.skipToIndex(originalIndex)
             return@withLock
         }
 
         try {
             currentCoroutineContext().ensureActive()
-            playerRepository.prepare(source, previousSong)
+            playerRepository.prepare(result.url, previousSong)
             installedIndex = queueManager.currentIndex.value
             playerRepository.play()
             playerRepository.awaitPlaybackStarted(previousSong.id)
@@ -314,42 +384,63 @@ class BackgroundPlaybackNavigator @Inject constructor(
         return queueManager.skipToNext()
     }
 
-    private suspend fun resolveSource(song: Song): String? {
+    private suspend fun resolveSource(song: Song): ResolveResult {
         val prefetched = prefetchedSources.remove(song.id)
         if (prefetched != null) {
             try {
-                prefetched.await()?.takeIf { it.isNotBlank() }?.let { return it }
+                val result = prefetched.await()
+                if (result is ResolveResult.Success) return result
             } catch (cancelled: CancellationException) {
                 currentCoroutineContext().ensureActive()
                 Log.w(TAG, "BackgroundNav: prefetch cancelled for ${song.id}; resolving on demand")
             } catch (error: Exception) {
+                if (NetworkErrorClassifier.isNetworkError(error, error.message)) {
+                    return ResolveResult.NetworkError(error, error.message ?: "Error de red")
+                }
                 Log.w(TAG, "BackgroundNav: prefetch failed for ${song.id}; resolving on demand", error)
             }
         }
         return resolveSourceUncached(song)
     }
 
-    private suspend fun resolveSourceUncached(song: Song): String? {
+    private suspend fun resolveSourceUncached(song: Song): ResolveResult {
         try {
-            offlineManager.getOfflineFilePath(song.id)?.let { return it }
+            offlineManager.getOfflineFilePath(song.id)?.let { return ResolveResult.Success(it) }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Exception) {
+            if (NetworkErrorClassifier.isNetworkError(error, error.message)) {
+                return ResolveResult.NetworkError(error, error.message ?: "Error de red")
+            }
             Log.w(TAG, "BackgroundNav: offline lookup failed for ${song.id}", error)
         }
 
         if (song.id.startsWith("local_")) {
-            return song.streamUrl?.takeIf { it.isNotBlank() }
+            val url = song.streamUrl?.takeIf { it.isNotBlank() }
+            return if (url != null) ResolveResult.Success(url) else ResolveResult.Unplayable("Sin fuente local")
         }
 
         return try {
             val result = getAudioStreamUseCase(song.id)
-            if (result is Resource.Success) result.data?.takeIf { it.isNotBlank() } else null
+            if (result is Resource.Success) {
+                val url = result.data?.takeIf { it.isNotBlank() }
+                if (url != null) ResolveResult.Success(url) else ResolveResult.Unplayable("Stream URL vacía")
+            } else {
+                val msg = result.message.orEmpty()
+                if (NetworkErrorClassifier.isNetworkError(null, msg)) {
+                    ResolveResult.NetworkError(null, msg)
+                } else {
+                    ResolveResult.Unplayable(msg)
+                }
+            }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Exception) {
-            Log.w(TAG, "BackgroundNav: stream lookup failed for ${song.id}", error)
-            null
+            if (NetworkErrorClassifier.isNetworkError(error, error.message)) {
+                ResolveResult.NetworkError(error, error.message ?: "Error de red")
+            } else {
+                ResolveResult.Unplayable(error.message ?: "Error al obtener audio")
+            }
         }
     }
 }
