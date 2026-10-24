@@ -171,13 +171,22 @@ internal class NotificationForwardingPlayer(
     }
 }
 
+internal fun posicionAGuardar(state: Int, positionMs: Long, durationMs: Long): Long {
+    if (state == Player.STATE_ENDED) return 0L
+    if (durationMs > 0 && positionMs >= durationMs - 2000L) return 0L
+    return positionMs
+}
+
 /** Keeps the logical queue aligned with the item Media3 actually selected. */
 internal class QueueSyncListener(
     private val queueManager: QueueManager,
+    private val playbackLogManager: com.xploitmusic.app.core.util.PlaybackLogManager,
     private val onQueueTransition: () -> Unit = {}
 ) : Player.Listener {
     override fun onMediaItemTransition(mediaItem: androidx.media3.common.MediaItem?, reason: Int) {
         val mediaId = mediaItem?.mediaId?.takeIf { it.isNotBlank() } ?: return
+        val title = mediaItem.mediaMetadata?.title?.toString() ?: mediaId
+        playbackLogManager.log("TRANSICION", "INFO", "Transición a '$title'")
         val index = queueManager.queue.value.indexOfFirst { it.id == mediaId }
         if (index >= 0 && index != queueManager.currentIndex.value) {
             queueManager.skipToIndex(index)
@@ -238,7 +247,9 @@ class XploitMediaService : MediaLibraryService() {
         val index = queueManager.currentIndex.value
         // A pending skip may have changed the queue index before the player.
         if (songs.getOrNull(index)?.id != song.id) return
-        val snapshot = SavedPlaybackSession(songs, index, player.currentPosition)
+        val durationMs = song.durationSeconds * 1000L
+        val currentPos = posicionAGuardar(player.playbackState, player.currentPosition, durationMs)
+        val snapshot = SavedPlaybackSession(songs, index, currentPos)
         sessionStore.save(snapshot)
         if (!player.playWhenReady && player.playbackState == Player.STATE_READY) {
             val pausedSince = pausedSinceElapsedMs ?: android.os.SystemClock.elapsedRealtime().also {
@@ -261,7 +272,15 @@ class XploitMediaService : MediaLibraryService() {
             queueManager.setQueue(saved.songs, saved.index)
             pendingResumption = saved
             player.playWhenReady = false
-            player.setMediaItem(resumptionPlaceholderItem(saved), saved.positionMs)
+            val song = saved.songs.getOrNull(saved.index)
+            val durationMs = (song?.durationSeconds ?: 0L) * 1000L
+            val safePositionMs = posicionAGuardar(-1, saved.positionMs, durationMs)
+            if (safePositionMs == 0L && saved.positionMs > 0L) {
+                playbackLogManager.log("RESTAURACION", "INFO", "Restauración: '${song?.title}' había terminado (${saved.positionMs}ms / ${durationMs}ms); reiniciando posición a 0ms")
+            } else {
+                playbackLogManager.log("RESTAURACION", "INFO", "Restauración de sesión para '${song?.title}' en ${saved.positionMs}ms")
+            }
+            player.setMediaItem(resumptionPlaceholderItem(saved), safePositionMs)
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Exception) {
@@ -347,7 +366,7 @@ class XploitMediaService : MediaLibraryService() {
         audioManager = getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
         audioManager.registerAudioDeviceCallback(audioDeviceCallback, null)
 
-        queueSyncListener = QueueSyncListener(queueManager) { maybePrefetchNextTrack() }
+        queueSyncListener = QueueSyncListener(queueManager, playbackLogManager) { maybePrefetchNextTrack() }
         player.addListener(playbackEndListener)
         player.addListener(queueSyncListener)
         player.addListener(favoriteStateListener)
@@ -480,6 +499,7 @@ class XploitMediaService : MediaLibraryService() {
                 // Begin resolving the next item before this track can finish.
                 // The current track remains paused unless Play was actually requested.
                 if (!skipHandler.hasActiveDelegate()) {
+                    playbackLogManager.log("PREFETCH", "INFO", "Restauración: prefetch iniciado para la siguiente canción")
                     backgroundPlaybackNavigator.prefetchNextTrack()
                 }
                 if (pendingResumeShouldPlay) player.play() else player.pause()
@@ -532,6 +552,7 @@ class XploitMediaService : MediaLibraryService() {
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         saveSession()
+        playbackLogManager.log("BACKGROUND", "INFO", "XploitMediaService onTaskRemoved() - App removida de recientisimas (playWhenReady=${mediaSession?.player?.playWhenReady})")
         val sessionPlayer = mediaSession?.player
         if (sessionPlayer == null || sessionPlayer.mediaItemCount == 0) {
             stopSelf()
@@ -614,8 +635,16 @@ class XploitMediaService : MediaLibraryService() {
                     } else {
                         if (player.mediaItemCount == 0) queueManager.setQueue(saved.songs, saved.index)
                         pendingResumption = saved
+                        val song = saved.songs.getOrNull(saved.index)
+                        val durationMs = (song?.durationSeconds ?: 0L) * 1000L
+                        val safePositionMs = posicionAGuardar(-1, saved.positionMs, durationMs)
+                        if (safePositionMs == 0L && saved.positionMs > 0L) {
+                            playbackLogManager.log("RESTAURACION", "INFO", "Restauración (Bluetooth): '${song?.title}' había terminado (${saved.positionMs}ms / ${durationMs}ms); reiniciando posición a 0ms")
+                        } else {
+                            playbackLogManager.log("RESTAURACION", "INFO", "Restauración de sesión (Bluetooth) para '${song?.title}' en ${saved.positionMs}ms")
+                        }
                         result.set(MediaSession.MediaItemsWithStartPosition(
-                            listOf(resumptionPlaceholderItem(saved)), 0, saved.positionMs))
+                            listOf(resumptionPlaceholderItem(saved)), 0, safePositionMs))
                         resumePendingHardwarePlay()
                     }
                 } catch (error: Exception) {

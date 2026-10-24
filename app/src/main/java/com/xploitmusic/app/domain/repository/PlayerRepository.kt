@@ -1,5 +1,6 @@
 package com.xploitmusic.app.domain.repository
 
+import com.xploitmusic.app.domain.model.PlayerError
 import com.xploitmusic.app.domain.model.Song
 import kotlinx.coroutines.flow.Flow
 
@@ -30,6 +31,6 @@ interface PlayerRepository {
     fun setRepeatMode(repeatMode: Int)
     fun setShuffleModeEnabled(shuffleModeEnabled: Boolean)
 
-    /** Emits user-friendly error messages when ExoPlayer encounters a playback error */
-    val playerError: Flow<String?>
+    /** Emits structured error information when ExoPlayer encounters a playback error */
+    val playerError: Flow<PlayerError>
 }

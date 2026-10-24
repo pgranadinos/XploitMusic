@@ -1,0 +1,32 @@
+[1mdiff --git a/app/build.gradle.kts b/app/build.gradle.kts[m
+[1mindex 4fb481f..bf5f339 100644[m
+[1m--- a/app/build.gradle.kts[m
+[1m+++ b/app/build.gradle.kts[m
+[36m@@ -20,6 +20,19 @@[m [mval localBffBaseUrl = localProperties.getProperty([m
+ )[m
+ val spotifyClientId = localProperties.getProperty("SPOTIFY_CLIENT_ID", "").trim()[m
+ [m
+[32m+[m[32mval gitCommitHash = try {[m
+[32m+[m[32m    val process = ProcessBuilder("git", "rev-parse", "--short", "HEAD")[m
+[32m+[m[32m        .directory(rootProject.rootDir)[m
+[32m+[m[32m        .redirectOutput(ProcessBuilder.Redirect.PIPE)[m
+[32m+[m[32m        .redirectError(ProcessBuilder.Redirect.PIPE)[m
+[32m+[m[32m        .start()[m
+[32m+[m[32m    process.waitFor(2, TimeUnit.SECONDS)[m
+[32m+[m[32m    val output = process.inputStream.bufferedReader().readText().trim()[m
+[32m+[m[32m    if (output.isNotBlank() && !output.contains("fatal")) output else "desconocido"[m
+[32m+[m[32m} catch (_: Exception) {[m
+[32m+[m[32m    "desconocido"[m
+[32m+[m[32m}[m
+[32m+[m
+ fun String.asBuildConfigString(): String =[m
+     "\"${replace("\\", "\\\\").replace("\"", "\\\"")}\""[m
+ [m
+[36m@@ -43,6 +56,7 @@[m [mandroid {[m
+         buildConfigField("String", "PIPED_BASE_URL", "\"https://api.piped.private.coffee/\"")[m
+         buildConfigField("String", "LRCLIB_BASE_URL", "\"https://lrclib.net/\"")[m
+         buildConfigField("String", "SPOTIFY_CLIENT_ID", spotifyClientId.asBuildConfigString())[m
+[32m+[m[32m        buildConfigField("String", "GIT_COMMIT_HASH", "\"$gitCommitHash\"")[m
+     }[m
+ [m
+     buildTypes {[m

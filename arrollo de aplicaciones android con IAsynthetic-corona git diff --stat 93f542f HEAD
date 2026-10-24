@@ -1,0 +1,14 @@
+ .../main/java/com/xploitmusic/app/MainActivity.kt  |  11 [32m+[m
+ .../app/core/util/PlaybackLogManager.kt            | 181 [32m++++++++[m[31m--[m
+ .../app/data/local/SpotifyConfigurationStore.kt    |   3 [31m-[m
+ .../app/data/local/SpotifyOAuthSessionStore.kt     |   9 [32m+[m
+ .../com/xploitmusic/app/data/remote/SpotifyDtos.kt |  30 [32m+[m[31m-[m
+ .../app/data/repository/OfflineManager.kt          |  25 [32m++[m
+ .../app/data/repository/SpotifyRepositoryImpl.kt   |  19 [32m+[m[31m-[m
+ .../app/presentation/home/HomeScreen.kt            |  15 [32m+[m
+ .../library/ImportPlaylistViewModel.kt             |  15 [32m+[m
+ .../app/presentation/library/LibraryScreen.kt      |  14 [32m+[m
+ .../app/presentation/settings/SettingsScreen.kt    | 366 [32m+++++++++++++++++++++[m
+ .../app/presentation/settings/SettingsViewModel.kt |  76 [32m+++++[m
+ .../app/data/repository/SpotifyCallbackTest.kt     |  88 [32m+++++[m
+ 13 files changed, 806 insertions(+), 46 deletions(-)
