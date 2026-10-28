@@ -15,6 +15,7 @@ import com.xploitmusic.app.domain.repository.StreamRepository
 import com.xploitmusic.app.domain.usecase.GetAudioStreamUseCase
 import com.xploitmusic.app.domain.usecase.GetLyricsUseCase
 import com.xploitmusic.app.domain.usecase.ToggleFavoriteUseCase
+import com.google.common.truth.Truth.assertThat
 import io.mockk.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -42,7 +43,9 @@ class PlayerViewModelSongSyncTest {
     private lateinit var mockOfflineManager: OfflineManager
     private lateinit var queueManager: QueueManagerImpl
     private lateinit var mockPlaybackLogManager: PlaybackLogManager
+
     private val playerErrorFlow = MutableSharedFlow<PlayerError>()
+    private val mediaItemTransitionFlow = MutableSharedFlow<String?>()
 
     @Before
     fun setup() {
@@ -53,7 +56,7 @@ class PlayerViewModelSongSyncTest {
             every { currentPosition } returns MutableStateFlow(5000L)
             every { duration } returns flowOf(100000L)
             every { trackEnded } returns MutableSharedFlow<Unit>()
-            every { mediaItemTransition } returns flowOf(null)
+            every { mediaItemTransition } returns mediaItemTransitionFlow
             every { playerError } returns playerErrorFlow
             coEvery { hasNextMediaItem() } returns false
         }
@@ -101,30 +104,70 @@ class PlayerViewModelSongSyncTest {
     }
 
     @Test
-    fun `cuando reproductor reporta B y ViewModel tiene A, error de red invalida B y registra DESINCRONIZADO`() = runTest(testDispatcher) {
-        val songA = Song("song_A", "Song A", "Artist", "", 100L, "http://audio/A")
-        val songB = Song("song_B", "Song B", "Artist", "", 100L, "http://audio/B")
+    fun `A - reproduccion normal transicion a la siguiente cancion actualiza currentSong`() = runTest(testDispatcher) {
+        val song1 = Song("song_1", "Song 1", "Artist", "", 100L, "http://audio/1")
+        val song2 = Song("song_2", "Song 2", "Artist", "", 100L, "http://audio/2")
+        coEvery { mockStreamRepo.getStreamInfo("song_1") } returns Resource.Success("http://audio/1_fresh")
+        coEvery { mockStreamRepo.getStreamInfo("song_2") } returns Resource.Success("http://audio/2_fresh")
 
-        viewModel.playSingleSong(songA)
-        runCurrent()
+        viewModel.playSong(song1, listOf(song1, song2))
+        advanceUntilIdle()
 
-        queueManager.setQueue(listOf(songA, songB), 0)
+        assertThat(viewModel.currentSong.value?.id).isEqualTo("song_1")
 
-        // Player currentMediaId reports "song_B", desynced from ViewModel's song_A
-        coEvery { mockPlayerRepo.currentMediaId() } returns "song_B"
+        // ExoPlayer transitions to song_2
+        coEvery { mockPlayerRepo.currentMediaId() } returns "song_2"
+        mediaItemTransitionFlow.emit("song_2")
+        advanceUntilIdle()
 
-        clearMocks(mockStreamRepo, answers = false)
+        assertThat(viewModel.currentSong.value?.id).isEqualTo("song_2")
+        verify { mockPlaybackLogManager.log("TRANSICION_VM", "INFO", match { it.contains("mediaId='song_2'") && it.contains("encontrada=si") }) }
+    }
 
-        val netErr = PlayerError(
-            code = PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
-            codeName = "ERROR_CODE_IO_NETWORK_CONNECTION_FAILED",
-            message = "Error de red"
-        )
-        playerErrorFlow.emit(netErr)
-        runCurrent()
+    @Test
+    fun `B - tras reconexion una transicion a la cancion siguiente precargada actualiza currentSong`() = runTest(testDispatcher) {
+        val song1 = Song("song_1", "Song 1", "Artist", "", 100L, "http://audio/1")
+        val song2 = Song("song_2", "Song 2", "Artist", "", 100L, "http://audio/2")
+        coEvery { mockStreamRepo.getStreamInfo("song_1") } returns Resource.Success("http://audio/1_fresh")
+        coEvery { mockStreamRepo.getStreamInfo("song_2") } returns Resource.Success("http://audio/2_fresh")
 
-        verify { mockPlaybackLogManager.log("DESINCRONIZADO", "WARN", "player=song_B vm=song_A") }
-        verify(atLeast = 1) { mockStreamRepo.invalidateStream("song_B") }
-        verify(exactly = 0) { mockStreamRepo.invalidateStream("song_A") }
+        // Play queue so song2 gets pre-fetched into songsInPlayer
+        viewModel.playSong(song1, listOf(song1, song2))
+        advanceUntilIdle()
+
+        // Simulate reconnection / re-fetch on song1 where _prefetchedNextSong would be overwritten in old logic
+        coEvery { mockPlayerRepo.currentMediaId() } returns "song_1"
+        mediaItemTransitionFlow.emit("song_1")
+        advanceUntilIdle()
+
+        assertThat(viewModel.currentSong.value?.id).isEqualTo("song_1")
+
+        // Now ExoPlayer transitions to song2 which was recorded in songsInPlayer
+        coEvery { mockPlayerRepo.currentMediaId() } returns "song_2"
+        mediaItemTransitionFlow.emit("song_2")
+        advanceUntilIdle()
+
+        assertThat(viewModel.currentSong.value?.id).isEqualTo("song_2")
+        verify { mockPlaybackLogManager.log("TRANSICION_VM", "INFO", match { it.contains("mediaId='song_2'") && it.contains("encontrada=si") }) }
+    }
+
+    @Test
+    fun `C - transicion a un mediaId desconocido NO cambia currentSong y registra WARN DESCONOCIDA`() = runTest(testDispatcher) {
+        val song1 = Song("song_1", "Song 1", "Artist", "", 100L, "http://audio/1")
+        coEvery { mockStreamRepo.getStreamInfo("song_1") } returns Resource.Success("http://audio/1_fresh")
+
+        viewModel.playSingleSong(song1)
+        advanceUntilIdle()
+
+        assertThat(viewModel.currentSong.value?.id).isEqualTo("song_1")
+
+        // ExoPlayer emits an unknown mediaId
+        coEvery { mockPlayerRepo.currentMediaId() } returns "unknown_999"
+        mediaItemTransitionFlow.emit("unknown_999")
+        advanceUntilIdle()
+
+        // currentSong remains song_1
+        assertThat(viewModel.currentSong.value?.id).isEqualTo("song_1")
+        verify { mockPlaybackLogManager.log("TRANSICION_VM", "WARN", "DESCONOCIDA: mediaId='unknown_999'") }
     }
 }
