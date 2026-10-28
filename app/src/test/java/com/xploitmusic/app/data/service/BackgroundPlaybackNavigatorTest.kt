@@ -26,6 +26,8 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.flow.flowOf
 import io.mockk.every
+import io.mockk.verify
+import androidx.media3.common.PlaybackException
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class BackgroundPlaybackNavigatorTest {
@@ -38,6 +40,7 @@ class BackgroundPlaybackNavigatorTest {
     private lateinit var streamRepository: StreamRepository
     private lateinit var offlineManager: OfflineManager
     private lateinit var queueManager: QueueManagerImpl
+    private lateinit var mockLogManager: com.xploitmusic.app.core.util.PlaybackLogManager
     private lateinit var navigator: BackgroundPlaybackNavigator
 
     private fun song(id: String) = Song(id, "Song $id", "Artist", "", 180L)
@@ -53,7 +56,7 @@ class BackgroundPlaybackNavigatorTest {
         streamRepository = mockk()
         offlineManager = mockk()
         queueManager = QueueManagerImpl()
-        val mockLogManager: com.xploitmusic.app.core.util.PlaybackLogManager = mockk(relaxed = true)
+        mockLogManager = mockk(relaxed = true)
         navigator = BackgroundPlaybackNavigator(
             playerRepository,
             queueManager,
@@ -283,5 +286,23 @@ class BackgroundPlaybackNavigatorTest {
 
         // Pre-fetch for s2 should be cancelled and not queued
         coVerify(exactly = 0) { playerRepository.addNextMediaItem(any(), s2) }
+    }
+
+    @Test
+    fun `awaitPlaybackStarted throws PlaybackException network failure pauses and does not advance queue`() = runTest {
+        val s1 = song("1")
+        val s2 = song("2")
+        queueManager.setQueue(listOf(s1, s2), 0)
+
+        coEvery { getAudioStream("2") } returns Resource.Success("https://audio/2")
+        val netExc = PlaybackException("Network connection failed", null, PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED)
+        coEvery { playerRepository.awaitPlaybackStarted("2") } throws netExc
+
+        navigator.navigateNext()
+        runCurrent()
+
+        coVerify { playerRepository.pause() }
+        assertThat(queueManager.currentIndex.value).isEqualTo(1)
+        verify { mockLogManager.log("PAUSA", "WARN", "origen=fallo-red-reproducir") }
     }
 }

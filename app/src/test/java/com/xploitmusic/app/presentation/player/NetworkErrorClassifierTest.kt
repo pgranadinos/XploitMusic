@@ -1,5 +1,6 @@
 package com.xploitmusic.app.presentation.player
 
+import androidx.media3.common.PlaybackException
 import com.google.common.truth.Truth.assertThat
 import com.xploitmusic.app.domain.provider.ProviderError
 import org.junit.Test
@@ -31,6 +32,18 @@ class NetworkErrorClassifierTest {
     fun `ProviderError NetworkIssue is classified as network error`() {
         val exc = ProviderError.NetworkIssue("LOCAL_YOUTUBE", UnknownHostException("host"))
         assertThat(NetworkErrorClassifier.isNetworkError(exc)).isTrue()
+    }
+
+    @Test
+    fun `PlaybackException network connection failed code is classified as network error`() {
+        val exc = PlaybackException("Network connection failed", null, PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED)
+        assertThat(NetworkErrorClassifier.isNetworkError(exc)).isTrue()
+    }
+
+    @Test
+    fun `PlaybackException decoding failed code is NOT classified as network error`() {
+        val exc = PlaybackException("Decoding failed", null, PlaybackException.ERROR_CODE_DECODING_FAILED)
+        assertThat(NetworkErrorClassifier.isNetworkError(exc)).isFalse()
     }
 
     @Test

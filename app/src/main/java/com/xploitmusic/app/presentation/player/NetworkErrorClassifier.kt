@@ -1,5 +1,6 @@
 package com.xploitmusic.app.presentation.player
 
+import androidx.media3.common.PlaybackException
 import com.xploitmusic.app.domain.provider.ProviderError
 import java.io.IOException
 import java.net.SocketTimeoutException
@@ -12,6 +13,15 @@ object NetworkErrorClassifier {
                 throwable is UnknownHostException ||
                 throwable is SocketTimeoutException ||
                 throwable is IOException) {
+                return true
+            }
+            if (throwable is PlaybackException &&
+                throwable.errorCode in setOf(
+                    PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+                    PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT,
+                    PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS
+                )
+            ) {
                 return true
             }
         }

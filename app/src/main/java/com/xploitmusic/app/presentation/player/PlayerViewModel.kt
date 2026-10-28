@@ -105,6 +105,9 @@ class PlayerViewModel @Inject constructor(
     private var pendingResumePositionMs: Long? = null
     private var pendingResumePositionSongId: String? = null
     private var currentSongRetryCount = 0
+    private var reconnectAttemptActive = false
+    private var reconnectJob: Job? = null
+    private val RECONNECT_DELAYS_MS = listOf(5_000L, 10_000L, 20_000L, 30_000L)
 
     // Track the pre-fetched next song so we can update _currentSong on transition
     private var _prefetchedNextSong: Song? = null
@@ -253,16 +256,26 @@ class PlayerViewModel @Inject constructor(
                 Log.e(TAG, "PlayerVM: Player error received — code=$code ($codeName), msg=$errorMsg")
                 playbackLogManager.log("PLAYER_VM", "INFO", "Error recibido en ViewModel: code=$code ($codeName)")
 
-                val currentSong = activeStreamSong ?: _currentSong.value
+                val mediaId = playerRepository.currentMediaId()
+                val playerSong = mediaId?.let { findSongByMediaId(it) }
+                val currentSong = playerSong ?: activeStreamSong ?: _currentSong.value
+                if (playerSong == null || playerSong.id != (activeStreamSong ?: _currentSong.value)?.id) {
+                    playbackLogManager.log("DESINCRONIZADO", "WARN",
+                        "player=${mediaId} vm=${(activeStreamSong ?: _currentSong.value)?.id}")
+                }
 
                 // 1. If device is completely offline ("Sin red"), pause without consuming retries, invalidating stream or auto-skipping!
                 if (playbackLogManager.currentNetworkType.value == "Sin red") {
                     val savedPosition = currentPosition.value
+                    playbackLogManager.log("PAUSA", "WARN", "origen=vm-sin-red")
                     pendingResumePositionMs = if (savedPosition > 1000L) savedPosition else null
                     pendingResumePositionSongId = currentSong?.id
                     _errorMessage.value = MSG_NO_INTERNET
                     _playbackState.value = PlaybackState.Error(MSG_NO_INTERNET)
                     playbackLogManager.log("PLAYBACK", "WARN", "Reproducción pausada por falta de red en '${currentSong?.title}' a los ${savedPosition}ms")
+                    if (currentSong != null && !reconnectAttemptActive) {
+                        startReconnect(currentSong, _playGeneration, savedPosition)
+                    }
                     return@collect
                 }
 
@@ -317,7 +330,13 @@ class PlayerViewModel @Inject constructor(
             playbackLogManager.networkEvents
                 .debounce(2500L)
                 .collect { newNetworkType ->
-                    val song = activeStreamSong ?: _currentSong.value
+                    val mediaId = playerRepository.currentMediaId()
+                    val playerSong = mediaId?.let { findSongByMediaId(it) }
+                    val song = playerSong ?: activeStreamSong ?: _currentSong.value
+                    if (playerSong == null || playerSong.id != (activeStreamSong ?: _currentSong.value)?.id) {
+                        playbackLogManager.log("DESINCRONIZADO", "WARN",
+                            "player=${mediaId} vm=${(activeStreamSong ?: _currentSong.value)?.id}")
+                    }
                     val state = _playbackState.value
                     val isPlayingOrBuffering = isPlaying.value || state is PlaybackState.Playing || state is PlaybackState.Buffering
                     val isWaitingForNetwork = pendingResumePositionSongId == song?.id && (state is PlaybackState.Error || !isPlaying.value)
@@ -331,8 +350,11 @@ class PlayerViewModel @Inject constructor(
                     if (song != null && previousNetworkType != "UNKNOWN" && previousNetworkType != newNetworkType) {
                         if (newNetworkType == "Sin red") {
                             // Offline - network loss handling
-                        } else if (isWaitingForNetwork || state is PlaybackState.Error) {
+                        } else if (isWaitingForNetwork) {
                             // Only invalidate and re-fetch if in Error or waiting state, strictly checking song match for saved position
+                            reconnectJob?.cancel()
+                            reconnectJob = null
+                            reconnectAttemptActive = false
                             val savedPosition = if (pendingResumePositionSongId == song.id) (pendingResumePositionMs ?: currentPosition.value) else 0L
                             val capturedGen = _playGeneration
                             val capturedSongId = song.id
@@ -590,6 +612,9 @@ class PlayerViewModel @Inject constructor(
             currentSongRetryCount = 0
             pendingResumePositionMs = null
             pendingResumePositionSongId = null
+            reconnectJob?.cancel()
+            reconnectJob = null
+            reconnectAttemptActive = false
         }
         activeStreamSong = song
         // OPTIMISTIC UPDATE: Set _currentSong immediately so the UI shows the song
@@ -684,11 +709,16 @@ class PlayerViewModel @Inject constructor(
 
         // ── ONLINE SONG: Pause without auto-skipping if network is completely disconnected ──
         if (playbackLogManager.currentNetworkType.value == "Sin red") {
-            val friendlyMsg = "Sin conexión a internet — la reproducción se reanudará al reconectar."
+            playbackLogManager.log("PAUSA", "WARN", "origen=vm-solicitud-sin-red")
+            val friendlyMsg = MSG_NO_INTERNET
+            val savedPosition = currentPosition.value
             pendingResumePositionSongId = song.id
             _errorMessage.value = friendlyMsg
             _playbackState.value = PlaybackState.Error(friendlyMsg)
             playbackLogManager.log("PLAYBACK", "WARN", "Canción '${song.title}' solicitada sin red. Pausando en espera de conexión.")
+            if (!reconnectAttemptActive) {
+                startReconnect(song, generation, savedPosition)
+            }
             return
         }
 
@@ -774,11 +804,17 @@ class PlayerViewModel @Inject constructor(
                         errMsg.contains("timed out")
 
                     if (isNetworkError) {
-                        val friendlyMsg = "Sin conexión a internet — la reproducción se reanudará al reconectar."
+                        playbackLogManager.log("PAUSA", "WARN", "origen=vm-red-extraccion")
+                        val friendlyMsg = MSG_NO_INTERNET
+                        val savedPosition = currentPosition.value
+                        pendingResumePositionMs = if (savedPosition > 1000L) savedPosition else null
                         pendingResumePositionSongId = song.id
                         _errorMessage.value = friendlyMsg
                         _playbackState.value = PlaybackState.Error(friendlyMsg)
                         playbackLogManager.log("PLAYBACK", "WARN", "Error de red al extraer stream de '${song.title}'. Pausando en espera de conexión.")
+                        if (!reconnectAttemptActive) {
+                            startReconnect(song, generation, savedPosition)
+                        }
                     } else {
                         _errorMessage.value = result.message ?: "Error al obtener audio. Saltando..."
                         _playbackState.value = PlaybackState.Error(result.message ?: "Error")
@@ -801,13 +837,19 @@ class PlayerViewModel @Inject constructor(
             }
             Log.e(TAG, "PlayerVM: ❌ Exception in stream fetch: ${e.javaClass.simpleName}: ${e.message}", e)
             _ignoringTransition = false
-            val isNetExc = e is java.io.IOException
+            val isNetExc = e is java.io.IOException || NetworkErrorClassifier.isNetworkError(e, e.message)
             if (isNetExc) {
-                val friendlyMsg = "Sin conexión a internet — la reproducción se reanudará al reconectar."
+                playbackLogManager.log("PAUSA", "WARN", "origen=vm-red-excepcion")
+                val friendlyMsg = MSG_NO_INTERNET
+                val savedPosition = currentPosition.value
+                pendingResumePositionMs = if (savedPosition > 1000L) savedPosition else null
                 pendingResumePositionSongId = song.id
                 _errorMessage.value = friendlyMsg
                 _playbackState.value = PlaybackState.Error(friendlyMsg)
                 playbackLogManager.log("PLAYBACK", "WARN", "Excepción de red al extraer stream de '${song.title}'. Pausando en espera de conexión.")
+                if (!reconnectAttemptActive) {
+                    startReconnect(song, generation, savedPosition)
+                }
             } else {
                 val friendlyMsg = makeFriendlyError(e.message ?: "Error al cargar audio")
                 _errorMessage.value = friendlyMsg
@@ -822,6 +864,40 @@ class PlayerViewModel @Inject constructor(
                 _playbackState.value = PlaybackState.Idle
             }
             Log.d(TAG, "PlayerVM: playInternal complete for '${song.title}', state=${_playbackState.value}")
+        }
+    }
+
+    private fun startReconnect(song: Song, gen: Long, savedPosition: Long) {
+        if (reconnectAttemptActive || reconnectJob?.isActive == true) return
+        reconnectJob?.cancel()
+        reconnectJob = viewModelScope.launch {
+            try {
+                for ((i, delayMs) in RECONNECT_DELAYS_MS.withIndex()) {
+                    delay(delayMs)
+                    val currentMediaId = playerRepository.currentMediaId()
+                    if (_playGeneration != gen || (currentMediaId != null && currentMediaId != song.id) || pendingResumePositionSongId != song.id) {
+                        Log.d(TAG, "PlayerVM: Auto-reconnect cancelled for '${song.title}' due to state change")
+                        return@launch
+                    }
+                    playbackLogManager.log("RECONEXION", "INFO", "Intento ${i + 1}/4 para '${song.title}'")
+                    pendingResumePositionMs = savedPosition
+                    streamRepository.invalidateStream(song.id)
+
+                    reconnectAttemptActive = true
+                    try {
+                        playInternal(song, gen, isRetry = true)
+                    } finally {
+                        reconnectAttemptActive = false
+                    }
+
+                    if (_playbackState.value is PlaybackState.Playing) {
+                        return@launch
+                    }
+                }
+                playbackLogManager.log("RECONEXION", "ERROR", "Sin reconexión tras 4 intentos")
+            } finally {
+                reconnectAttemptActive = false
+            }
         }
     }
 
@@ -942,10 +1018,13 @@ class PlayerViewModel @Inject constructor(
     }
 
     fun togglePlayPause() {
+        reconnectJob?.cancel()
+        reconnectJob = null
+        reconnectAttemptActive = false
+        pendingResumePositionMs = null
+        pendingResumePositionSongId = null
         viewModelScope.launch {
             if (isPlaying.value) {
-                pendingResumePositionMs = null
-                pendingResumePositionSongId = null
                 playerRepository.pause()
             } else {
                 if (_playbackState.value is PlaybackState.Idle && _currentSong.value != null) {
