@@ -109,6 +109,16 @@ class PlayerViewModel @Inject constructor(
     private var reconnectJob: Job? = null
     private val RECONNECT_DELAYS_MS = listOf(5_000L, 10_000L, 20_000L, 30_000L)
 
+    private val songsInPlayer = LinkedHashMap<String, Song>()
+
+    private fun recordSongInPlayer(song: Song) {
+        songsInPlayer[song.id] = song
+        while (songsInPlayer.size > 20) {
+            val oldestKey = songsInPlayer.keys.firstOrNull() ?: break
+            songsInPlayer.remove(oldestKey)
+        }
+    }
+
     // Track the pre-fetched next song so we can update _currentSong on transition
     private var _prefetchedNextSong: Song? = null
     private var _prefetchJob: Job? = null
@@ -229,6 +239,18 @@ class PlayerViewModel @Inject constructor(
 
                 if (mediaId == null) return@collect
 
+                val song = findSongByMediaId(mediaId)
+
+                playbackLogManager.log(
+                    "TRANSICION_VM",
+                    "INFO",
+                    "mediaId='$mediaId' encontrada=${if (song != null) "si" else "no"} ignoringTransition=$_ignoringTransition songsInPlayerSize=${songsInPlayer.size}"
+                )
+
+                if (song == null) {
+                    playbackLogManager.log("TRANSICION_VM", "WARN", "DESCONOCIDA: mediaId='$mediaId'")
+                }
+
                 // Suppress stale ExoPlayer events fired during clearQueue/prepare
                 // to prevent _currentSong reverting to old song while buffering next.
                 if (_ignoringTransition) {
@@ -236,8 +258,6 @@ class PlayerViewModel @Inject constructor(
                     return@collect
                 }
 
-                // Find the song matching the mediaId from predefined queues
-                val song = findSongByMediaId(mediaId)
                 if (song != null) {
                     Log.d(TAG, "PlayerVM: 🎵 Transition matched known song: '${song.title}'")
                     onSongTransitioned(song)
@@ -517,10 +537,11 @@ class PlayerViewModel @Inject constructor(
      * Tries to find a Song object by mediaId from all possible sources.
      */
     private fun findSongByMediaId(mediaId: String): Song? {
-         if (_currentSong.value?.id == mediaId) return _currentSong.value
-         if (_prefetchedNextSong?.id == mediaId) return _prefetchedNextSong
+        if (_currentSong.value?.id == mediaId) return _currentSong.value
+        songsInPlayer[mediaId]?.let { return it }
+        if (_prefetchedNextSong?.id == mediaId) return _prefetchedNextSong
 
-         return queueManager.queue.value.firstOrNull { it.id == mediaId }
+        return queueManager.queue.value.firstOrNull { it.id == mediaId }
     }
 
     // ── Editable Queue Actions ──
@@ -629,7 +650,6 @@ class PlayerViewModel @Inject constructor(
         
         _errorMessage.value = null
         _playbackState.value = PlaybackState.Buffering(song)
-        _prefetchedNextSong = song // Temporarily hold it so findSongByMediaId can resolve it
         _prefetchJob?.cancel()
 
         // Ignore the synchronous transition emitted while setMediaItem replaces the source.
@@ -650,6 +670,7 @@ class PlayerViewModel @Inject constructor(
         if (offlinePath != null) {
             try {
                 Log.d(TAG, "PlayerVM: 📶✅ Degradación Elegante — Jugando archivo offline ($offlinePath)")
+                recordSongInPlayer(song)
                 playerRepository.prepare(offlinePath, song)
                 playerRepository.play()
                 _ignoringTransition = false // BUG 1 FIX: Reset flag so future transitions work
@@ -681,6 +702,7 @@ class PlayerViewModel @Inject constructor(
         if (isLocal && !song.streamUrl.isNullOrBlank()) {
             try {
                 Log.d(TAG, "PlayerVM: ✅ Local song — using content URI directly")
+                recordSongInPlayer(song)
                 playerRepository.prepare(song.streamUrl, song)
                 playerRepository.play()
                 _ignoringTransition = false // BUG 1 FIX: Reset flag so future transitions work
@@ -758,6 +780,7 @@ class PlayerViewModel @Inject constructor(
                     val streamUrl = result.data
                     if (!streamUrl.isNullOrBlank()) {
                         Log.d(TAG, "PlayerVM: ✅ Stream URL obtained (${streamUrl.take(80)}...)")
+                        recordSongInPlayer(song)
                         playerRepository.prepare(streamUrl, song)
                         if (pendingResumePositionSongId == song.id) {
                             val posToSeek = pendingResumePositionMs
@@ -1011,6 +1034,7 @@ class PlayerViewModel @Inject constructor(
 
         if (!nextUrl.isNullOrBlank()) {
             Log.d(TAG, "PlayerVM: ✅ Pre-fetched URL for '${nextSong.title}', queueing in ExoPlayer...")
+            recordSongInPlayer(nextSong)
             playerRepository.addNextMediaItem(nextUrl, nextSong)
         } else {
             Log.w(TAG, "PlayerVM: ⚠️ Could not pre-fetch stream URL for '${nextSong.title}'")
