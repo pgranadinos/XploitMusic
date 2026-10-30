@@ -1,5 +1,6 @@
 package com.xploitmusic.app.data.provider.util
 
+import com.google.gson.stream.MalformedJsonException
 import com.xploitmusic.app.domain.provider.ProviderError
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
@@ -40,7 +41,12 @@ suspend fun <T> executeWithRetry(
     }
 }
 
-private fun mapToProviderError(providerId: String, e: Exception): ProviderError {
+internal fun mapToProviderError(providerId: String, e: Exception): ProviderError {
+    val esJsonMalformado = generateSequence<Throwable>(e) { it.cause }.any { it is MalformedJsonException }
+    if (esJsonMalformado) {
+        return ProviderError.FatalError(providerId, e.message ?: "JSON malformado")
+    }
+
     return when (e) {
         is ProviderError -> e
         is TimeoutCancellationException -> ProviderError.NetworkIssue(providerId, e)
