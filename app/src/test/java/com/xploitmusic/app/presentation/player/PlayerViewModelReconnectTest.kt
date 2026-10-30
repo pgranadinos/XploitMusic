@@ -27,6 +27,7 @@ import kotlinx.coroutines.test.*
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class PlayerViewModelReconnectTest {
@@ -47,14 +48,17 @@ class PlayerViewModelReconnectTest {
     private val networkTypeFlow = MutableStateFlow("Wi-Fi")
     private val networkEventsFlow = MutableSharedFlow<String>(extraBufferCapacity = 16)
     private val playerErrorFlow = MutableSharedFlow<PlayerError>()
+    private val isPlayingFlow = MutableStateFlow(true)
+    private val currentPositionFlow = MutableStateFlow(5000L)
 
     @Before
     fun setup() {
+
         Dispatchers.setMain(testDispatcher)
 
         mockPlayerRepo = mockk(relaxed = true) {
-            every { isPlaying } returns flowOf(true)
-            every { currentPosition } returns MutableStateFlow(5000L)
+            every { isPlaying } returns isPlayingFlow
+            every { currentPosition } returns currentPositionFlow
             every { duration } returns flowOf(100000L)
             every { trackEnded } returns MutableSharedFlow<Unit>()
             every { mediaItemTransition } returns flowOf(null)
@@ -98,6 +102,7 @@ class PlayerViewModelReconnectTest {
             analyticsLogger = mockAnalyticsLogger,
             playbackLogManager = mockPlaybackLogManager
         )
+
     }
 
     @After
@@ -142,19 +147,10 @@ class PlayerViewModelReconnectTest {
         viewModel.playSingleSong(testSong)
         runCurrent()
 
-        // Trigger network error (starts reconnect timer)
-        networkTypeFlow.value = "Sin red"
-        val netErr = PlayerError(
-            code = PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
-            codeName = "ERROR_CODE_IO_NETWORK_CONNECTION_FAILED",
-            message = "Sin conexión"
-        )
-        playerErrorFlow.emit(netErr)
-        runCurrent()
-
+        isPlayingFlow.value = true
         clearMocks(mockStreamRepo, answers = false)
 
-        // User manually pauses
+        // User manually pauses during playback
         viewModel.togglePlayPause()
         runCurrent()
 
@@ -261,5 +257,70 @@ class PlayerViewModelReconnectTest {
         runCurrent()
 
         verify(exactly = 0) { mockStreamRepo.invalidateStream(any()) }
+    }
+
+    @Test
+    fun `f - tras agotar reconexion togglePlayPause invalida stream llama a playInternal con posicion guardada y no la pierde`() = runTest(testDispatcher) {
+        val testSong = Song("song_1", "Song 1", "Artist", "", 100L, "http://audio/1")
+        coEvery { mockPlayerRepo.currentMediaId() } returns "song_1"
+        coEvery { mockStreamRepo.getStreamInfo("song_1") } returns Resource.Error("Sin red")
+
+        currentPositionFlow.value = 45000L
+        backgroundScope.launch { viewModel.currentPosition.collect {} }
+        runCurrent()
+
+        viewModel.playSingleSong(testSong)
+        runCurrent()
+
+        // Exhaust all 4 attempts
+        val netErr = PlayerError(
+            code = PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+            codeName = "ERROR_CODE_IO_NETWORK_CONNECTION_FAILED",
+            message = "Sin conexión"
+        )
+        playerErrorFlow.emit(netErr)
+        runCurrent()
+
+        advanceTimeBy(65000L)
+        runCurrent()
+
+        // Player is now paused / error state, set isPlaying = false
+        isPlayingFlow.value = false
+        assertThat(viewModel.playbackState.value as Any).isInstanceOf(PlaybackState.Error::class.java)
+
+        clearMocks(mockStreamRepo, answers = false)
+        clearMocks(mockPlayerRepo, answers = false)
+        every { mockPlayerRepo.isPlaying } returns isPlayingFlow
+        every { mockPlayerRepo.currentPosition } returns currentPositionFlow
+        coEvery { mockPlayerRepo.currentMediaId() } returns "song_1"
+        coEvery { mockStreamRepo.getStreamInfo("song_1") } returns Resource.Success("http://audio/1_fresh")
+
+        // User taps play/pause to manually resume
+        viewModel.togglePlayPause()
+        advanceUntilIdle()
+
+        verify { mockStreamRepo.invalidateStream("song_1") }
+        verify { mockPlaybackLogManager.log("PLAYBACK", "INFO", "Reanudación manual tras pausa por red para 'Song 1'") }
+        coVerify { mockPlayerRepo.seekTo(45000L) }
+    }
+
+    @Test
+    fun `g - si el estado es Idle togglePlayPause reproduce la cancion desde su inicio`() = runTest(testDispatcher) {
+        val testSong = Song("song_idle", "Song Idle", "Artist", "", 100L, "http://audio/idle")
+        coEvery { mockPlayerRepo.currentMediaId() } returns "song_idle"
+
+        isPlayingFlow.value = false
+
+        viewModel.playSingleSong(testSong)
+        runCurrent()
+
+        clearMocks(mockPlayerRepo, answers = false)
+        every { mockPlayerRepo.isPlaying } returns isPlayingFlow
+
+        viewModel.togglePlayPause()
+        runCurrent()
+
+        coVerify { mockPlayerRepo.play() }
+        coVerify(exactly = 0) { mockPlayerRepo.seekTo(any()) }
     }
 }

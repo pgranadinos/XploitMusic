@@ -278,10 +278,11 @@ class PlayerViewModel @Inject constructor(
 
                 val mediaId = playerRepository.currentMediaId()
                 val playerSong = mediaId?.let { findSongByMediaId(it) }
-                val currentSong = playerSong ?: activeStreamSong ?: _currentSong.value
-                if (playerSong == null || playerSong.id != (activeStreamSong ?: _currentSong.value)?.id) {
+                val currentSong = playerSong ?: _currentSong.value ?: activeStreamSong
+                val vmSong = _currentSong.value
+                if (playerSong == null || playerSong.id != vmSong?.id) {
                     playbackLogManager.log("DESINCRONIZADO", "WARN",
-                        "player=${mediaId} vm=${(activeStreamSong ?: _currentSong.value)?.id}")
+                        "player=${mediaId} vm=${vmSong?.id}")
                 }
 
                 // 1. If device is completely offline ("Sin red"), pause without consuming retries, invalidating stream or auto-skipping!
@@ -352,10 +353,11 @@ class PlayerViewModel @Inject constructor(
                 .collect { newNetworkType ->
                     val mediaId = playerRepository.currentMediaId()
                     val playerSong = mediaId?.let { findSongByMediaId(it) }
-                    val song = playerSong ?: activeStreamSong ?: _currentSong.value
-                    if (playerSong == null || playerSong.id != (activeStreamSong ?: _currentSong.value)?.id) {
+                    val song = playerSong ?: _currentSong.value ?: activeStreamSong
+                    val vmSong = _currentSong.value
+                    if (playerSong == null || playerSong.id != vmSong?.id) {
                         playbackLogManager.log("DESINCRONIZADO", "WARN",
-                            "player=${mediaId} vm=${(activeStreamSong ?: _currentSong.value)?.id}")
+                            "player=${mediaId} vm=${vmSong?.id}")
                     }
                     val state = _playbackState.value
                     val isPlayingOrBuffering = isPlaying.value || state is PlaybackState.Playing || state is PlaybackState.Buffering
@@ -782,6 +784,7 @@ class PlayerViewModel @Inject constructor(
                         Log.d(TAG, "PlayerVM: ✅ Stream URL obtained (${streamUrl.take(80)}...)")
                         recordSongInPlayer(song)
                         playerRepository.prepare(streamUrl, song)
+
                         if (pendingResumePositionSongId == song.id) {
                             val posToSeek = pendingResumePositionMs
                             pendingResumePositionMs = null
@@ -1042,18 +1045,43 @@ class PlayerViewModel @Inject constructor(
     }
 
     fun togglePlayPause() {
-        reconnectJob?.cancel()
-        reconnectJob = null
-        reconnectAttemptActive = false
-        pendingResumePositionMs = null
-        pendingResumePositionSongId = null
+
+        val song = _currentSong.value
+        val state = _playbackState.value
+
         viewModelScope.launch {
             if (isPlaying.value) {
+                reconnectJob?.cancel()
+                reconnectJob = null
+                reconnectAttemptActive = false
+                pendingResumePositionMs = null
+                pendingResumePositionSongId = null
                 playerRepository.pause()
             } else {
-                if (_playbackState.value is PlaybackState.Idle && _currentSong.value != null) {
-                    playInternal(_currentSong.value!!)
+                if (state is PlaybackState.Error && song != null) {
+                    val savedPosition = if (pendingResumePositionSongId == song.id) (pendingResumePositionMs ?: currentPosition.value) else currentPosition.value
+                    reconnectJob?.cancel()
+                    reconnectJob = null
+                    reconnectAttemptActive = false
+                    pendingResumePositionMs = if (savedPosition > 1000L) savedPosition else null
+                    pendingResumePositionSongId = song.id
+                    streamRepository.invalidateStream(song.id)
+                    playbackLogManager.log("PLAYBACK", "INFO", "Reanudación manual tras pausa por red para '${song.title}'")
+                    playInternal(song, _playGeneration, isRetry = true)
+
+                } else if (state is PlaybackState.Idle && song != null) {
+                    reconnectJob?.cancel()
+                    reconnectJob = null
+                    reconnectAttemptActive = false
+                    pendingResumePositionMs = null
+                    pendingResumePositionSongId = null
+                    playInternal(song)
                 } else {
+                    reconnectJob?.cancel()
+                    reconnectJob = null
+                    reconnectAttemptActive = false
+                    pendingResumePositionMs = null
+                    pendingResumePositionSongId = null
                     playerRepository.play()
                 }
             }
