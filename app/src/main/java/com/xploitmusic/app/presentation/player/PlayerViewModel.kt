@@ -109,6 +109,58 @@ class PlayerViewModel @Inject constructor(
     private var reconnectJob: Job? = null
     private val RECONNECT_DELAYS_MS = listOf(5_000L, 10_000L, 20_000L, 30_000L)
 
+    private val DNS_RETRY_DELAY_MS = 30_000L
+    private val DNS_RETRY_MAX = 15
+    private var dnsRetryJob: Job? = null
+    private var dnsRetryCount = 0
+
+    private fun cancelDnsRetry(reason: String) {
+        if (dnsRetryJob != null || dnsRetryCount > 0) {
+            dnsRetryJob?.cancel()
+            dnsRetryJob = null
+            dnsRetryCount = 0
+            playbackLogManager.log("REINTENTO_RED", "INFO", "Reintentos cancelados (motivo=$reason)")
+        }
+    }
+
+    private fun scheduleDnsRetry(song: Song, generation: Long, savedPosition: Long) {
+        if (playbackLogManager.currentNetworkType.value == "Sin red") return
+        if (dnsRetryJob?.isActive == true) return
+        playbackLogManager.setKeepForegroundForPendingResume(true, "reintento-dns")
+        if (dnsRetryCount >= DNS_RETRY_MAX) {
+            playbackLogManager.log("REINTENTO_RED", "WARN", "Reintentos AGOTADOS ($DNS_RETRY_MAX/$DNS_RETRY_MAX) para '${song.title}'. Esperando acción manual o evento de red.")
+            return
+        }
+
+        playbackLogManager.log("REINTENTO_RED", "INFO", "Programado intento ${dnsRetryCount + 1}/$DNS_RETRY_MAX para '${song.title}' en 30s")
+        dnsRetryJob = viewModelScope.launch {
+            delay(DNS_RETRY_DELAY_MS)
+            dnsRetryCount++
+            val currentMediaId = playerRepository.currentMediaId()
+            if (_playGeneration != generation || (currentMediaId != null && currentMediaId != song.id) || pendingResumePositionSongId != song.id) {
+                playbackLogManager.log("REINTENTO_RED", "INFO", "Reintento $dnsRetryCount/$DNS_RETRY_MAX cancelado para '${song.title}' por cambio de estado")
+                return@launch
+            }
+            if (playbackLogManager.currentNetworkType.value == "Sin red") {
+                playbackLogManager.log("REINTENTO_RED", "WARN", "Reintento $dnsRetryCount/$DNS_RETRY_MAX omitido por falta de red")
+                return@launch
+            }
+            playbackLogManager.log("REINTENTO_RED", "INFO", "Ejecutando reintento $dnsRetryCount/$DNS_RETRY_MAX para '${song.title}' desde ${savedPosition}ms")
+            pendingResumePositionMs = savedPosition
+            pendingResumePositionSongId = song.id
+            streamRepository.invalidateStream(song.id)
+            dnsRetryJob = null
+            playInternal(song, generation, isRetry = true)
+        }
+    }
+
+    private fun getValidSavedPosition(song: Song, rawPos: Long): Long? {
+        if (rawPos <= 1000L) return null
+        val durationMs = song.durationSeconds * 1000L
+        if (durationMs > 0L && rawPos >= durationMs - 1000L) return null
+        return rawPos
+    }
+
     private val songsInPlayer = LinkedHashMap<String, Song>()
 
     private fun recordSongInPlayer(song: Song) {
@@ -167,7 +219,7 @@ class PlayerViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.Lazily, null)
 
     val isPlaying: StateFlow<Boolean> = playerRepository.isPlaying
-        .stateIn(viewModelScope, SharingStarted.Lazily, false)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     val currentPosition: StateFlow<Long> = playerRepository.currentPosition
         .stateIn(viewModelScope, SharingStarted.Lazily, 0L)
@@ -289,14 +341,12 @@ class PlayerViewModel @Inject constructor(
                 if (playbackLogManager.currentNetworkType.value == "Sin red") {
                     val savedPosition = currentPosition.value
                     playbackLogManager.log("PAUSA", "WARN", "origen=vm-sin-red")
-                    pendingResumePositionMs = if (savedPosition > 1000L) savedPosition else null
+                    pendingResumePositionMs = currentSong?.let { getValidSavedPosition(it, savedPosition) }
                     pendingResumePositionSongId = currentSong?.id
                     _errorMessage.value = MSG_NO_INTERNET
                     _playbackState.value = PlaybackState.Error(MSG_NO_INTERNET)
+                    playbackLogManager.setKeepForegroundForPendingResume(true, "vm-sin-red")
                     playbackLogManager.log("PLAYBACK", "WARN", "Reproducción pausada por falta de red en '${currentSong?.title}' a los ${savedPosition}ms")
-                    if (currentSong != null && !reconnectAttemptActive) {
-                        startReconnect(currentSong, _playGeneration, savedPosition)
-                    }
                     return@collect
                 }
 
@@ -320,7 +370,7 @@ class PlayerViewModel @Inject constructor(
                     val savedPosition = currentPosition.value
 
                     currentSongRetryCount++
-                    pendingResumePositionMs = if (savedPosition > 1000L) savedPosition else null
+                    pendingResumePositionMs = getValidSavedPosition(currentSong, savedPosition)
                     pendingResumePositionSongId = capturedSongId
 
                     streamRepository.invalidateStream(capturedSongId)
@@ -351,6 +401,7 @@ class PlayerViewModel @Inject constructor(
             playbackLogManager.networkEvents
                 .debounce(2500L)
                 .collect { newNetworkType ->
+                    cancelDnsRetry("cambio_red")
                     val mediaId = playerRepository.currentMediaId()
                     val playerSong = mediaId?.let { findSongByMediaId(it) }
                     val song = playerSong ?: _currentSong.value ?: activeStreamSong
@@ -363,10 +414,11 @@ class PlayerViewModel @Inject constructor(
                     val isPlayingOrBuffering = isPlaying.value || state is PlaybackState.Playing || state is PlaybackState.Buffering
                     val isWaitingForNetwork = pendingResumePositionSongId == song?.id && (state is PlaybackState.Error || !isPlaying.value)
 
+                    val diagnosticMsg = "DEBUG_DIAGNOSTIC_NETWORK | previous='$previousNetworkType' | new='$newNetworkType' | songId=${song?.id} | isPlaying=${isPlaying.value} | playbackState=$state | waitingForNet=$isWaitingForNetwork"
                     playbackLogManager.log(
                         "DEBUG",
                         "INFO",
-                        "DEBUG_DIAGNOSTIC_NETWORK | previous='$previousNetworkType' | new='$newNetworkType' | songId=${song?.id} | isPlaying=${isPlaying.value} | playbackState=$state | waitingForNet=$isWaitingForNetwork"
+                        diagnosticMsg
                     )
 
                     if (song != null && previousNetworkType != "UNKNOWN" && previousNetworkType != newNetworkType) {
@@ -381,7 +433,7 @@ class PlayerViewModel @Inject constructor(
                             val capturedGen = _playGeneration
                             val capturedSongId = song.id
 
-                            pendingResumePositionMs = if (savedPosition > 1000L) savedPosition else null
+                            pendingResumePositionMs = getValidSavedPosition(song, savedPosition)
                             pendingResumePositionSongId = capturedSongId
 
                             streamRepository.invalidateStream(capturedSongId)
@@ -638,6 +690,8 @@ class PlayerViewModel @Inject constructor(
             reconnectJob?.cancel()
             reconnectJob = null
             reconnectAttemptActive = false
+            cancelDnsRetry("nueva_cancion")
+            playbackLogManager.setKeepForegroundForPendingResume(false, "nueva_cancion")
         }
         activeStreamSong = song
         // OPTIMISTIC UPDATE: Set _currentSong immediately so the UI shows the song
@@ -660,6 +714,7 @@ class PlayerViewModel @Inject constructor(
         // prepare() uses setMediaItem(), which atomically replaces the native queue.
         // Clearing first creates a false STATE_ENDED and must never be done here.
         try {
+            playbackLogManager.log("PAUSA_CMD", "INFO", "playInternal: llamando a playerRepository.pause() antes de extraer stream (song=${song.id}, gen=$generation, isRetry=$isRetry)")
             playerRepository.pause()
         } catch (e: Exception) {
             Log.w(TAG, "PlayerVM: Pause failed: ${e.message}")
@@ -736,13 +791,12 @@ class PlayerViewModel @Inject constructor(
             playbackLogManager.log("PAUSA", "WARN", "origen=vm-solicitud-sin-red")
             val friendlyMsg = MSG_NO_INTERNET
             val savedPosition = currentPosition.value
+            pendingResumePositionMs = getValidSavedPosition(song, savedPosition)
             pendingResumePositionSongId = song.id
             _errorMessage.value = friendlyMsg
             _playbackState.value = PlaybackState.Error(friendlyMsg)
+            playbackLogManager.setKeepForegroundForPendingResume(true, "vm-solicitud-sin-red")
             playbackLogManager.log("PLAYBACK", "WARN", "Canción '${song.title}' solicitada sin red. Pausando en espera de conexión.")
-            if (!reconnectAttemptActive) {
-                startReconnect(song, generation, savedPosition)
-            }
             return
         }
 
@@ -797,6 +851,7 @@ class PlayerViewModel @Inject constructor(
                             pendingResumePositionSongId = null
                         }
                         playerRepository.play()
+                        cancelDnsRetry("exito_reproduccion")
                         _ignoringTransition = false // Allow the real MediaItemTransition through
                         _playbackState.value = PlaybackState.Playing(song, 0L)
                         Log.d(TAG, "PlayerVM: ✅ prepare() + play() — state=PLAYING")
@@ -833,14 +888,13 @@ class PlayerViewModel @Inject constructor(
                         playbackLogManager.log("PAUSA", "WARN", "origen=vm-red-extraccion")
                         val friendlyMsg = MSG_NO_INTERNET
                         val savedPosition = currentPosition.value
-                        pendingResumePositionMs = if (savedPosition > 1000L) savedPosition else null
+                        pendingResumePositionMs = getValidSavedPosition(song, savedPosition)
                         pendingResumePositionSongId = song.id
                         _errorMessage.value = friendlyMsg
                         _playbackState.value = PlaybackState.Error(friendlyMsg)
+                        playbackLogManager.setKeepForegroundForPendingResume(true, "vm-red-extraccion")
                         playbackLogManager.log("PLAYBACK", "WARN", "Error de red al extraer stream de '${song.title}'. Pausando en espera de conexión.")
-                        if (!reconnectAttemptActive) {
-                            startReconnect(song, generation, savedPosition)
-                        }
+                        scheduleDnsRetry(song, generation, savedPosition)
                     } else {
                         _errorMessage.value = result.message ?: "Error al obtener audio. Saltando..."
                         _playbackState.value = PlaybackState.Error(result.message ?: "Error")
@@ -868,14 +922,13 @@ class PlayerViewModel @Inject constructor(
                 playbackLogManager.log("PAUSA", "WARN", "origen=vm-red-excepcion")
                 val friendlyMsg = MSG_NO_INTERNET
                 val savedPosition = currentPosition.value
-                pendingResumePositionMs = if (savedPosition > 1000L) savedPosition else null
+                pendingResumePositionMs = getValidSavedPosition(song, savedPosition)
                 pendingResumePositionSongId = song.id
                 _errorMessage.value = friendlyMsg
                 _playbackState.value = PlaybackState.Error(friendlyMsg)
+                playbackLogManager.setKeepForegroundForPendingResume(true, "vm-red-excepcion")
                 playbackLogManager.log("PLAYBACK", "WARN", "Excepción de red al extraer stream de '${song.title}'. Pausando en espera de conexión.")
-                if (!reconnectAttemptActive) {
-                    startReconnect(song, generation, savedPosition)
-                }
+                scheduleDnsRetry(song, generation, savedPosition)
             } else {
                 val friendlyMsg = makeFriendlyError(e.message ?: "Error al cargar audio")
                 _errorMessage.value = friendlyMsg
@@ -1017,6 +1070,7 @@ class PlayerViewModel @Inject constructor(
             return
         }
 
+        playbackLogManager.log("PREFETCH", "INFO", "PlayerVM prefetchNextSong: resolviendo mediaId=${nextSong.id} '${nextSong.title}'")
         Log.d(TAG, "PlayerVM: Pre-fetching next song: '${nextSong.title}' (${nextSong.id})")
         _prefetchedNextSong = nextSong
 
@@ -1046,6 +1100,7 @@ class PlayerViewModel @Inject constructor(
 
     fun togglePlayPause() {
 
+        cancelDnsRetry("manual")
         val song = _currentSong.value
         val state = _playbackState.value
 
@@ -1056,6 +1111,7 @@ class PlayerViewModel @Inject constructor(
                 reconnectAttemptActive = false
                 pendingResumePositionMs = null
                 pendingResumePositionSongId = null
+                playbackLogManager.setKeepForegroundForPendingResume(false, "manual")
                 playerRepository.pause()
             } else {
                 if (state is PlaybackState.Error && song != null) {

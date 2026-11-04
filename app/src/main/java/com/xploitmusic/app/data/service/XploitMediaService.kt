@@ -17,11 +17,13 @@ import androidx.media3.session.SessionResult
 import com.xploitmusic.app.R
 import com.xploitmusic.app.core.media.toSongOrNull
 import com.xploitmusic.app.core.media.toMediaMetadata
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.media3.session.DefaultMediaNotificationProvider
+import androidx.media3.session.MediaNotification
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import com.xploitmusic.app.domain.repository.FavoritesRepository
@@ -177,6 +179,82 @@ internal fun posicionAGuardar(state: Int, positionMs: Long, durationMs: Long): L
     return positionMs
 }
 
+internal fun shouldBeOngoing(
+    mediaItemCount: Int,
+    sessionClosed: Boolean,
+    playbackState: Int = Player.STATE_IDLE,
+    playWhenReady: Boolean = false
+): Boolean {
+    if (sessionClosed) return false
+    if (mediaItemCount <= 0) return false
+    return true
+}
+
+internal class XploitMediaNotificationProvider(
+    private val context: android.content.Context,
+    private val isSessionClosed: () -> Boolean
+) : MediaNotification.Provider {
+
+    private val defaultProvider = DefaultMediaNotificationProvider(context)
+    private var lastActionFactory: MediaNotification.ActionFactory? = null
+    private var lastCustomLayout: ImmutableList<CommandButton> = ImmutableList.of()
+    private var lastCallback: MediaNotification.Provider.Callback? = null
+
+    override fun createNotification(
+        mediaSession: MediaSession,
+        customLayout: ImmutableList<CommandButton>,
+        actionFactory: MediaNotification.ActionFactory,
+        callback: MediaNotification.Provider.Callback
+    ): MediaNotification {
+        lastActionFactory = actionFactory
+        lastCustomLayout = customLayout
+        lastCallback = callback
+
+        val mediaNotification = defaultProvider.createNotification(
+            mediaSession, customLayout, actionFactory, callback
+        )
+        return applyOngoingFlag(mediaSession, mediaNotification)
+    }
+
+    fun getNotificationForSession(mediaSession: MediaSession): MediaNotification? {
+        val actionFactory = lastActionFactory ?: return null
+        val callback = lastCallback ?: MediaNotification.Provider.Callback { }
+        val mediaNotification = defaultProvider.createNotification(
+            mediaSession, lastCustomLayout, actionFactory, callback
+        )
+        return applyOngoingFlag(mediaSession, mediaNotification)
+    }
+
+    private fun applyOngoingFlag(
+        mediaSession: MediaSession,
+        mediaNotification: MediaNotification
+    ): MediaNotification {
+        val mediaItemCount = mediaSession.player.mediaItemCount
+        val sessionClosed = isSessionClosed()
+        val isOngoing = shouldBeOngoing(
+            mediaItemCount = mediaItemCount,
+            sessionClosed = sessionClosed,
+            playbackState = mediaSession.player.playbackState,
+            playWhenReady = mediaSession.player.playWhenReady
+        )
+        val notification = mediaNotification.notification
+        if (isOngoing) {
+            notification.flags = notification.flags or Notification.FLAG_ONGOING_EVENT
+        } else {
+            notification.flags = notification.flags and Notification.FLAG_ONGOING_EVENT.inv()
+        }
+        return mediaNotification
+    }
+
+    override fun handleCustomCommand(
+        session: MediaSession,
+        action: String,
+        extras: Bundle
+    ): Boolean {
+        return defaultProvider.handleCustomCommand(session, action, extras)
+    }
+}
+
 /** Keeps the logical queue aligned with the item Media3 actually selected. */
 internal class QueueSyncListener(
     private val queueManager: QueueManager,
@@ -186,6 +264,7 @@ internal class QueueSyncListener(
     override fun onMediaItemTransition(mediaItem: androidx.media3.common.MediaItem?, reason: Int) {
         val mediaId = mediaItem?.mediaId?.takeIf { it.isNotBlank() } ?: return
         val title = mediaItem.mediaMetadata?.title?.toString() ?: mediaId
+        playbackLogManager.log("NOTIF_META", "INFO", "Transición Media3: mediaId=$mediaId title='$title' reason=$reason")
         playbackLogManager.log("TRANSICION", "INFO", "Transición a '$title'")
         val index = queueManager.queue.value.indexOfFirst { it.id == mediaId }
         if (index >= 0 && index != queueManager.currentIndex.value) {
@@ -296,9 +375,11 @@ class XploitMediaService : MediaLibraryService() {
 
     private var mediaSession: MediaLibrarySession? = null
     private lateinit var queueSyncListener: QueueSyncListener
+    private lateinit var notificationProvider: XploitMediaNotificationProvider
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var favoriteStateJob: Job? = null
     private var currentFavorite = false
+    private var sessionClosed = false
 
     @Inject
     lateinit var playbackLogManager: com.xploitmusic.app.core.util.PlaybackLogManager
@@ -363,6 +444,8 @@ class XploitMediaService : MediaLibraryService() {
 
     override fun onCreate() {
         super.onCreate()
+        notificationProvider = XploitMediaNotificationProvider(this) { sessionClosed }
+        setMediaNotificationProvider(notificationProvider)
         audioManager = getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
         audioManager.registerAudioDeviceCallback(audioDeviceCallback, null)
 
@@ -404,6 +487,35 @@ class XploitMediaService : MediaLibraryService() {
 
         observeFavorite(player.currentMediaItem)
         player.addListener(sessionSaveListener)
+        player.addListener(object : Player.Listener {
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                val reasonName = when (reason) {
+                    Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST -> "USER_REQUEST ($reason)"
+                    Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_FOCUS_LOSS -> "AUDIO_FOCUS_LOSS ($reason)"
+                    Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_BECOMING_NOISY -> "AUDIO_BECOMING_NOISY ($reason)"
+                    Player.PLAY_WHEN_READY_CHANGE_REASON_REMOTE -> "REMOTE ($reason)"
+                    Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM -> "END_OF_MEDIA_ITEM ($reason)"
+                    Player.PLAY_WHEN_READY_CHANGE_REASON_SUPPRESSED_TOO_LONG -> "SUPPRESSED_TOO_LONG ($reason)"
+                    else -> "UNKNOWN ($reason)"
+                }
+                playbackLogManager.log("PAUSA_ORIGEN", "INFO", "playWhenReady=$playWhenReady reason=$reasonName")
+            }
+
+            override fun onPlayerErrorChanged(error: androidx.media3.common.PlaybackException?) {
+                playbackLogManager.log("PLAYBACK_INTERNO", "WARN", "onPlayerErrorChanged: error=${error?.message} code=${error?.errorCode} (${error?.errorCodeName})")
+                val code = error?.errorCode ?: -1
+                val isNetworkErr = code == androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
+                    code == androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ||
+                    code == androidx.media3.common.PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS
+                if (isNetworkErr && player.playWhenReady) {
+                    playbackLogManager.setKeepForegroundForPendingResume(true, "service-player-network-error")
+                }
+            }
+
+            override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                onPlayerErrorChanged(error)
+            }
+        })
         restoreJob = serviceScope.launch { restoreSession() }
         serviceScope.launch {
             while (true) {
@@ -444,6 +556,7 @@ class XploitMediaService : MediaLibraryService() {
                 .setContentText("Cargando reproducción…")
                 .setOngoing(true).setOnlyAlertOnce(true).build())
         showingResumeNotification = true
+        playbackLogManager.log("NOTIFICATION", "INFO", "showResumeNotification: startForeground invocado")
         resumeWatchdog = serviceScope.launch {
             delay(35_000L)
             resumeJob?.cancel()
@@ -454,15 +567,43 @@ class XploitMediaService : MediaLibraryService() {
     }
 
     override fun onUpdateNotification(session: MediaSession, startInForegroundRequired: Boolean) {
-        // Let Media3 replace the temporary startup notification as soon as restored
-        // metadata is available, so the media controls remain visible during resolution.
-        super.onUpdateNotification(session, startInForegroundRequired)
+        val mediaItemCount = session.player.mediaItemCount
+        val playbackState = session.player.playbackState
+        val playWhenReady = session.player.playWhenReady
+        val isOngoing = shouldBeOngoing(
+            mediaItemCount = mediaItemCount,
+            sessionClosed = sessionClosed,
+            playbackState = playbackState,
+            playWhenReady = playWhenReady
+        )
+        val shouldKeepForeground = isOngoing || startInForegroundRequired || playbackLogManager.keepForegroundForPendingResume.value
+        val reason = when {
+            mediaItemCount > 0 && !sessionClosed -> "SESSION_ACTIVE_MEDIA_LOADED"
+            startInForegroundRequired -> "START_IN_FOREGROUND_REQUIRED"
+            playbackLogManager.keepForegroundForPendingResume.value -> "KEEP_FLAG_TRUE"
+            else -> "ALLOW_DROP"
+        }
+        playbackLogManager.log(
+            "NOTIFICATION",
+            "INFO",
+            "onUpdateNotification: mediaItemCount=$mediaItemCount sessionClosed=$sessionClosed playbackState=$playbackState startInForegroundRequired=$startInForegroundRequired keepFlag=${playbackLogManager.keepForegroundForPendingResume.value} ongoing=$isOngoing -> effectiveStartForeground=$shouldKeepForeground reason=$reason"
+        )
+
+        if (isOngoing && playbackState == Player.STATE_IDLE) {
+            val mediaNotification = notificationProvider.getNotificationForSession(session)
+            if (mediaNotification != null) {
+                startForeground(mediaNotification.notificationId, mediaNotification.notification)
+                return
+            }
+        }
+        super.onUpdateNotification(session, shouldKeepForeground)
     }
 
     private fun finishFailedResumption() {
         resumeWatchdog?.cancel()
         if (showingResumeNotification) {
             showingResumeNotification = false
+            playbackLogManager.log("NOTIFICATION", "WARN", "finishFailedResumption: stopForeground invocado")
             stopForeground(STOP_FOREGROUND_REMOVE)
         }
         if (player.mediaItemCount == 0 && pendingResumption == null) stopSelf()
@@ -493,6 +634,7 @@ class XploitMediaService : MediaLibraryService() {
                 val resolved = resumptionResolver.resolve(saved)
                     ?: throw IllegalStateException("No se pudo renovar el audio de ${song.title}")
                 if (player.currentMediaItem?.mediaId != song.id) return@launch
+                playbackLogManager.log("PAUSA_CMD", "INFO", "handlePendingResumeRequest: fijando player.playWhenReady=false")
                 player.playWhenReady = false
                 player.setMediaItem(resolved.item, saved.positionMs)
                 player.prepare()
@@ -570,6 +712,7 @@ class XploitMediaService : MediaLibraryService() {
     }
 
     override fun onDestroy() {
+        sessionClosed = true
         try {
             audioManager.unregisterAudioDeviceCallback(audioDeviceCallback)
         } catch (_: Exception) {}
@@ -597,6 +740,8 @@ class XploitMediaService : MediaLibraryService() {
         currentFavorite = false
         updateFavoriteLayout()
         val mediaId = mediaItem?.mediaId?.takeIf { it.isNotBlank() } ?: return
+        val title = mediaItem.mediaMetadata?.title?.toString() ?: "Sin título"
+        playbackLogManager.log("NOTIF_META", "INFO", "MediaItem fijado en servicio: mediaId=$mediaId title='$title'")
         favoriteStateJob = serviceScope.launch {
             favoritesRepository.isFavorite(mediaId)
                 .distinctUntilChanged()
