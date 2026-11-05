@@ -32,4 +32,22 @@ class XploitMediaServiceSessionTest {
         val result = posicionAGuardar(Player.STATE_READY, 60000L, 0L)
         assertThat(result).isEqualTo(60000L)
     }
+
+    @Test
+    fun `e) IDLE tras error de red con cancion cargada es ongoing`() {
+        val result = shouldBeOngoing(mediaItemCount = 1, sessionClosed = false)
+        assertThat(result).isTrue()
+    }
+
+    @Test
+    fun `f) sesion cerrada no es ongoing`() {
+        val result = shouldBeOngoing(mediaItemCount = 1, sessionClosed = true)
+        assertThat(result).isFalse()
+    }
+
+    @Test
+    fun `g) cola terminada no es ongoing`() {
+        val result = shouldBeOngoing(mediaItemCount = 0, sessionClosed = false)
+        assertThat(result).isFalse()
+    }
 }
