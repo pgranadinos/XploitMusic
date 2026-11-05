@@ -268,6 +268,18 @@ class QueueManagerImplTest {
         assertThat(queueManager.skipToIndex(5)).isNull()
     }
 
+    @Test
+    fun `jumpAndReorder rotates queue bringing tapped song to front`() {
+        val songs = listOf(song("1"), song("2"), song("3"), song("4"))
+        queueManager.setQueue(songs, startIndex = 0)
+
+        val result = queueManager.jumpAndReorder(2)
+
+        assertThat(result?.id).isEqualTo("3")
+        assertThat(queueManager.currentIndex.value).isEqualTo(0)
+        assertThat(queueManager.queue.value.map { it.id }).isEqualTo(listOf("3", "4", "1", "2"))
+    }
+
     // ═══════════════════════════════════════════════════════════════════
     // toggleShuffle
     // ═══════════════════════════════════════════════════════════════════

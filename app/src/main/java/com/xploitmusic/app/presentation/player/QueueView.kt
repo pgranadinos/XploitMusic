@@ -2,6 +2,7 @@ package com.xploitmusic.app.presentation.player
 
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -29,6 +30,7 @@ fun QueueView(
     upNext: List<Song>,
     onMove: (from: Int, to: Int) -> Unit,
     onRemove: (index: Int) -> Unit,
+    onItemClick: (index: Int) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     if (upNext.isEmpty()) {
@@ -89,6 +91,7 @@ fun QueueView(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(vertical = 4.dp)
+                                .clickable { onItemClick(index) }
                                 .detectReorderAfterLongPress(state)
                                 .shadow(elevation, RoundedCornerShape(8.dp))
                                 .background(

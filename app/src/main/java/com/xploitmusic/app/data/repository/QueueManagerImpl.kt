@@ -211,6 +211,20 @@ class QueueManagerImpl @Inject constructor() : QueueManager {
         return _currentTrack.value
     }
 
+    @Synchronized
+    override fun jumpAndReorder(index: Int): Song? {
+        val q = _queue.value
+        if (index < 0 || index >= q.size) return null
+
+        val reordered = q.drop(index) + q.take(index)
+        _queue.value = reordered
+        _currentIndex.value = 0
+        updateCurrent()
+        if (!_isShuffleEnabled.value) _originalQueue = reordered
+        Log.d(TAG, "QueueManager: jumpAndReorder to index $index ('${_currentTrack.value?.title}')")
+        return _currentTrack.value
+    }
+
     // ── Modes ──
 
     @Synchronized

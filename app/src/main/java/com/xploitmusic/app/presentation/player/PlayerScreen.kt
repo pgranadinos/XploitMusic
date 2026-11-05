@@ -314,6 +314,7 @@ fun PlayerScreen(
                 upNext = upNext,
                 onMove = { from, to -> viewModel.moveSongInQueue(from, to) },
                 onRemove = { idx -> viewModel.removeSongFromQueue(idx) },
+                onItemClick = { idx -> viewModel.playQueueItem(idx) },
                 modifier = Modifier.fillMaxSize()
             )
         }

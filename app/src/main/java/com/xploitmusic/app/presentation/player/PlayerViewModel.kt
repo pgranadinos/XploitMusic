@@ -612,6 +612,24 @@ class PlayerViewModel @Inject constructor(
         }
     }
 
+    fun playQueueItem(upNextIndex: Int) {
+        val absoluteIndex = queueManager.currentIndex.value + 1 + upNextIndex
+        val song = queueManager.jumpAndReorder(absoluteIndex)
+        if (song != null) {
+            val generation = ++_playGeneration
+            _autoSkipJob?.cancel()
+            _skipJob?.cancel()
+            _skipJob = null
+            _playInternalJob?.cancel()
+            _ignoringTransition = false
+            _historyCursor = -1
+            _historyStack.clear()
+            _playInternalJob = viewModelScope.launch {
+                playInternal(song, generation)
+            }
+        }
+    }
+
     fun playSong(song: Song, playlist: List<Song> = emptyList()) {
         Log.d(TAG, "PlayerVM: playSong called: ${song.title} (id=${song.id}), playlist size=${playlist.size}")
         _autoSkipJob?.cancel()

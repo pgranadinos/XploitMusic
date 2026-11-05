@@ -70,6 +70,9 @@ interface QueueManager {
     /** Jump to a specific index. Returns the [Song] or null */
     fun skipToIndex(index: Int): Song?
 
+    /** Jump to index and reorder queue (rotate items before index to the end) */
+    fun jumpAndReorder(index: Int): Song?
+
     // ── Modes ──
 
     /** Set repeat mode */
