@@ -35,6 +35,18 @@ class PlaybackLogManager @Inject constructor(
     private val _currentNetworkType = MutableStateFlow("UNKNOWN")
     val currentNetworkType: StateFlow<String> = _currentNetworkType.asStateFlow()
 
+    private val _keepForegroundForPendingResume = MutableStateFlow(false)
+    val keepForegroundForPendingResume: StateFlow<Boolean> = _keepForegroundForPendingResume.asStateFlow()
+
+    fun setKeepForegroundForPendingResume(keep: Boolean, reason: String) {
+        if (_keepForegroundForPendingResume.value != keep) {
+            _keepForegroundForPendingResume.value = keep
+            log("FOREGROUND_FLAG", "INFO", "keepForegroundForPendingResume=$keep (motivo=$reason)")
+        }
+    }
+
+    @Volatile var lastNetworkEventTimeMs: Long = System.currentTimeMillis()
+
     private val _networkEvents = MutableSharedFlow<String>(replay = 1, extraBufferCapacity = 16)
     val networkEvents: SharedFlow<String> = _networkEvents.asSharedFlow()
     companion object {
@@ -184,29 +196,109 @@ class PlaybackLogManager @Inject constructor(
         }
     }
 
+    fun resolveNetworkType(caps: android.net.NetworkCapabilities?, activeNetwork: android.net.Network?): String {
+        if (activeNetwork == null || caps == null) return "Sin red"
+        return when {
+            caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) -> "Wi-Fi"
+            caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) -> "Datos móviles"
+            caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET) -> "Ethernet"
+            else -> "Red conectada"
+        }
+    }
+
+    private val validatedNetworks = java.util.concurrent.ConcurrentHashMap.newKeySet<android.net.Network>()
+
+    fun getBestValidatedNetwork(connectivityManager: android.net.ConnectivityManager): android.net.Network? {
+        synchronized(validatedNetworks) {
+            val nets = validatedNetworks.toList()
+            if (nets.isEmpty()) return null
+
+            // Priority 1: Wi-Fi
+            nets.find { net ->
+                val caps = connectivityManager.getNetworkCapabilities(net)
+                caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) == true
+            }?.let { return it }
+
+            // Priority 2: Ethernet
+            nets.find { net ->
+                val caps = connectivityManager.getNetworkCapabilities(net)
+                caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET) == true
+            }?.let { return it }
+
+            // Priority 3: Cellular (Datos móviles)
+            nets.find { net ->
+                val caps = connectivityManager.getNetworkCapabilities(net)
+                caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) == true
+            }?.let { return it }
+
+            // Priority 4: Active network only if none of above validated
+            val activeNet = connectivityManager.activeNetwork
+            if (activeNet != null && activeNet in validatedNetworks) {
+                return activeNet
+            }
+
+            return nets.firstOrNull()
+        }
+    }
+
     fun startNetworkMonitoring() {
         try {
             val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager ?: return
-            val request = android.net.NetworkRequest.Builder().build()
+
+            fun refreshNetworkState(eventTag: String, eventNet: android.net.Network?) {
+                synchronized(validatedNetworks) {
+                    val activeNet = connectivityManager.activeNetwork
+                    val netToUse = getBestValidatedNetwork(connectivityManager)
+                    val capsToUse = netToUse?.let { connectivityManager.getNetworkCapabilities(it) } ?: (activeNet?.let { connectivityManager.getNetworkCapabilities(it) })
+
+                    val hasValidated = validatedNetworks.isNotEmpty()
+                    val newType = if (hasValidated && netToUse != null) {
+                        resolveNetworkType(capsToUse, netToUse)
+                    } else {
+                        "Sin red"
+                    }
+
+                    val previousType = _currentNetworkType.value
+                    lastNetworkEventTimeMs = System.currentTimeMillis()
+
+                    log("RED_ESTADO", "INFO", "refreshNetworkState ($eventTag): eventNet=$eventNet | activeNet=$activeNet | validatedCount=${validatedNetworks.size} | type=$newType | validated=$hasValidated")
+
+                    if (newType != previousType) {
+                        _currentNetworkType.value = newType
+                        _networkEvents.tryEmit(newType)
+                        log("NETWORK", "INFO", "Estado de red cambiado ($eventTag): $previousType -> $newType (validadas=${validatedNetworks.size})")
+                    }
+                }
+            }
+
+            val request = android.net.NetworkRequest.Builder()
+                .addTransportType(android.net.NetworkCapabilities.TRANSPORT_WIFI)
+                .addTransportType(android.net.NetworkCapabilities.TRANSPORT_CELLULAR)
+                .addTransportType(android.net.NetworkCapabilities.TRANSPORT_ETHERNET)
+                .build()
+
             connectivityManager.registerNetworkCallback(request, object : android.net.ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: android.net.Network) {
                     val caps = connectivityManager.getNetworkCapabilities(network)
-                    val isValidated = caps?.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
-                    val typeStr = when {
-                        caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) == true -> "Wi-Fi"
-                        caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) == true -> "Datos móviles"
-                        caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET) == true -> "Ethernet"
-                        else -> "Red conectada"
+                    if (caps?.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true) {
+                        validatedNetworks.add(network)
                     }
-                    _currentNetworkType.value = typeStr
-                    _networkEvents.tryEmit(typeStr)
-                    log("NETWORK", "INFO", "Estado de red cambiado: $typeStr (validada=$isValidated)")
+                    refreshNetworkState("onAvailable", network)
+                }
+
+                override fun onCapabilitiesChanged(network: android.net.Network, caps: android.net.NetworkCapabilities) {
+                    val isValidated = caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+                    if (isValidated) {
+                        validatedNetworks.add(network)
+                    } else {
+                        validatedNetworks.remove(network)
+                    }
+                    refreshNetworkState("onCapabilitiesChanged", network)
                 }
 
                 override fun onLost(network: android.net.Network) {
-                    _currentNetworkType.value = "Sin red"
-                    _networkEvents.tryEmit("Sin red")
-                    log("NETWORK", "WARN", "Estado de red cambiado: Sin red (Desconectado)")
+                    validatedNetworks.remove(network)
+                    refreshNetworkState("onLost", network)
                 }
             })
         } catch (e: Exception) {
