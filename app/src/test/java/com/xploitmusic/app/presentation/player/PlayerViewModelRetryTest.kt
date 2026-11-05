@@ -215,12 +215,14 @@ class PlayerViewModelRetryTest {
     }
 
     @Test
-    fun `manual pause clears pending resume position`() = runTest(testDispatcher) {
+    fun `manual pause calls pause once after user toggle`() = runTest(testDispatcher) {
         val testSong = Song("song_manual_pause", "Pause Test", "Artist", "", 100L, "http://audio/pause")
         coEvery { mockGetStream("song_manual_pause") } returns Resource.Success("http://audio/fresh")
 
         viewModel.playSingleSong(testSong)
         runCurrent()
+
+        clearMocks(mockPlayerRepo, answers = false)
 
         // User manually pauses
         viewModel.togglePlayPause()
