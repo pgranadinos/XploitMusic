@@ -541,7 +541,7 @@ class HomeViewModel @Inject constructor(
                 }
                 var recommendations = SongRecommendationSelector.select(
                     candidates = related,
-                    preferredArtists = preferredArtists,
+                    seedBias = preferredArtists.associateWith { 100L },
                     excludedIds = excludedIds,
                     limit = 15
                 )
@@ -550,7 +550,7 @@ class HomeViewModel @Inject constructor(
                     if (discovery is Resource.Success) {
                         recommendations = SongRecommendationSelector.select(
                             candidates = related + discovery.data.orEmpty(),
-                            preferredArtists = preferredArtists,
+                            seedBias = preferredArtists.associateWith { 100L },
                             excludedIds = excludedIds,
                             limit = 15
                         )

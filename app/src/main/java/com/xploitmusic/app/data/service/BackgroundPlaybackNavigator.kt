@@ -101,6 +101,8 @@ class BackgroundPlaybackNavigator @Inject constructor(
             while (attempt <= 3) {
                 if (queueManager.peekNext()?.id != next.id) return@launch
 
+                playbackLogManager.log("PREFETCH", "INFO", "Iniciando prefetch en segundo plano para mediaId=${next.id} '${next.title}' (intento $attempt)")
+
                 if (attempt > 0) {
                     val delayMs = PREFETCH_RETRY_DELAYS.getOrElse(attempt - 1) { 10_000L }
                     playbackLogManager.log("PREFETCH", "INFO", "Reintento $attempt/3 para '${next.title}'")
@@ -372,7 +374,7 @@ class BackgroundPlaybackNavigator @Inject constructor(
 
         val usefulRelated = SongRecommendationSelector.select(
             candidates = related,
-            seedArtist = seed.artist,
+            seedBias = mapOf(seed.artist to 50L),
             excludedIds = queueManager.playedIds + seed.id,
             limit = 10
         )
@@ -401,8 +403,7 @@ class BackgroundPlaybackNavigator @Inject constructor(
         }
         val selected = SongRecommendationSelector.select(
             candidates = candidates,
-            seedArtist = seed.artist,
-            preferredArtists = preferredArtists,
+            seedBias = mapOf(seed.artist to 50L) + preferredArtists.associateWith { 100L },
             excludedIds = queueManager.playedIds + seed.id,
             limit = 20
         )

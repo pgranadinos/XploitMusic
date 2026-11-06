@@ -83,7 +83,7 @@ class YouTubeMusicClient @Inject constructor(
         )
     }
 
-    private suspend fun watchQueue(videoId: String): List<Song> {
+    internal suspend fun watchQueue(videoId: String): List<Song> {
         val body = JsonObject().apply {
             addProperty("enablePersistentPlaylistPanel", true)
             addProperty("isAudioOnly", true)

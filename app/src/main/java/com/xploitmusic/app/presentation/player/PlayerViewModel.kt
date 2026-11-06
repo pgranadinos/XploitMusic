@@ -1055,8 +1055,7 @@ class PlayerViewModel @Inject constructor(
 
         val selected = SongRecommendationSelector.select(
             candidates = allNewSongs,
-            seedArtist = song.artist,
-            preferredArtists = preferredArtists,
+            seedBias = mapOf(song.artist to 50L) + preferredArtists.associateWith { 100L },
             excludedIds = queueManager.playedIds + song.id,
             limit = 20
         )
@@ -1297,7 +1296,7 @@ class PlayerViewModel @Inject constructor(
                 val candidates = if (result is Resource.Success) result.data.orEmpty() else emptyList()
                 val autoplay = SongRecommendationSelector.select(
                     candidates = candidates,
-                    seedArtist = seed.artist,
+                    seedBias = mapOf(seed.artist to 50L),
                     excludedIds = queueManager.playedIds + seed.id,
                     limit = 15
                 )
