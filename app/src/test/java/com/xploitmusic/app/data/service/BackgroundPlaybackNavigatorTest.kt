@@ -13,6 +13,7 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.launch
 import org.junit.Before
 import org.junit.Test
 import org.junit.After
@@ -304,5 +305,62 @@ class BackgroundPlaybackNavigatorTest {
         coVerify { playerRepository.pause() }
         assertThat(queueManager.currentIndex.value).isEqualTo(1)
         verify { mockLogManager.log("PAUSA", "WARN", "origen=fallo-red-reproducir") }
+    }
+
+    @Test
+    fun `f) with lock occupied navigator does not fetch radio nor add batch`() = runTest {
+        val current = song("1")
+        queueManager.setQueue(listOf(current), 0)
+        queueManager.tryBeginAutoplayReload()
+
+        navigator.navigateNext()
+
+        coVerify(exactly = 0) { streamRepository.getRelatedSongs(any()) }
+    }
+
+    @Test
+    fun `g) after fetching and adding lock is released in finally`() = runTest {
+        val current = song("1")
+        val related = song("2")
+        queueManager.setQueue(listOf(current), 0)
+        coEvery { streamRepository.getRelatedSongs("1") } returns Resource.Success(listOf(related))
+        coEvery { getAudioStream("2") } returns Resource.Success("https://audio/2")
+
+        navigator.navigateNext()
+
+        assertThat(queueManager.tryBeginAutoplayReload()).isTrue()
+    }
+
+    @Test
+    fun `h) with autoplay disabled navigator does not request radio nor search`() = runTest {
+        val current = song("1")
+        queueManager.setQueue(listOf(current), 0)
+        queueManager.toggleAutoplay() // turns off
+
+        navigator.navigateNext()
+
+        coVerify(exactly = 0) { streamRepository.getRelatedSongs(any()) }
+        coVerify(exactly = 0) { streamRepository.searchSongs(any()) }
+    }
+
+    @Test
+    fun `i) lock released in middle of waiting allows navigator to acquire lock and fetch batch`() = runTest {
+        val current = song("1")
+        val related = song("2")
+        queueManager.setQueue(listOf(current), 0)
+        coEvery { streamRepository.getRelatedSongs("1") } returns Resource.Success(listOf(related))
+        coEvery { getAudioStream("2") } returns Resource.Success("https://audio/2")
+
+        queueManager.tryBeginAutoplayReload() // occupy lock
+
+        backgroundScope.launch {
+            kotlinx.coroutines.delay(300L)
+            queueManager.endAutoplayReload()
+        }
+
+        navigator.navigateNext()
+
+        coVerify(exactly = 1) { streamRepository.getRelatedSongs("1") }
+        assertThat(queueManager.currentTrack.value).isEqualTo(related)
     }
 }

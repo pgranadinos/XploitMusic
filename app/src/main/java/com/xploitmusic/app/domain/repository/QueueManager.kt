@@ -87,7 +87,16 @@ interface QueueManager {
     // ── Autoplay ──
 
     /** Append autoplay tracks (from related streams), deduplicating against played IDs */
-    fun appendAutoplayTracks(songs: List<Song>)
+    fun appendAutoplayTracks(songs: List<Song>, limit: Int = 10): Int
+
+    /** Try to acquire the autoplay reload lock. Returns true if acquired, false if already in progress. */
+    fun tryBeginAutoplayReload(): Boolean
+
+    /** Try to acquire the autoplay reload lock, waiting up to [timeoutMs] if currently occupied. */
+    suspend fun awaitAutoplayReload(timeoutMs: Long = 10_000L): Boolean
+
+    /** Release the autoplay reload lock. */
+    fun endAutoplayReload()
 
     /** Check if there's a next song available */
     fun hasNext(): Boolean

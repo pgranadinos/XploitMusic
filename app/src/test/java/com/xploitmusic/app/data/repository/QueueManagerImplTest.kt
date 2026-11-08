@@ -380,7 +380,7 @@ class QueueManagerImplTest {
     fun `appendAutoplayTracks caps upcoming queue`() {
         queueManager.setQueue(listOf(song("current")), startIndex = 0)
 
-        queueManager.appendAutoplayTracks((1..75).map { song("auto-$it") })
+        queueManager.appendAutoplayTracks((1..75).map { song("auto-$it") }, limit = 50)
 
         assertThat(queueManager.upNext.value)
             .hasSize(QueueManagerImpl.MAX_UPCOMING_TRACKS)
@@ -465,5 +465,18 @@ class QueueManagerImplTest {
         queueManager.toggleAutoplay()
 
         assertThat(queueManager.isAutoplayEnabled.value).isFalse()
+    }
+
+    @Test
+    fun `a) tryBeginAutoplayReload returns true first time and false second time`() {
+        assertThat(queueManager.tryBeginAutoplayReload()).isTrue()
+        assertThat(queueManager.tryBeginAutoplayReload()).isFalse()
+    }
+
+    @Test
+    fun `b) after endAutoplayReload tryBeginAutoplayReload returns true again`() {
+        assertThat(queueManager.tryBeginAutoplayReload()).isTrue()
+        queueManager.endAutoplayReload()
+        assertThat(queueManager.tryBeginAutoplayReload()).isTrue()
     }
 }

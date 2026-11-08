@@ -80,6 +80,8 @@ class PlayerViewModel @Inject constructor(
 
     val upNext: StateFlow<List<Song>> = queueManager.upNext
 
+    private var autoplayReloadPending = false
+
     // QueueManager keeps this setting alive after the UI lifecycle ends.
     val autoplayEnabled: StateFlow<Boolean> = queueManager.isAutoplayEnabled
 
@@ -233,6 +235,26 @@ class PlayerViewModel @Inject constructor(
 
     init {
         skipHandler.attach(this)
+
+        // Observe upNext for autoplay reload threshold (<= 3)
+        viewModelScope.launch {
+            queueManager.upNext.collect { upcoming ->
+                if (queueManager.isAutoplayEnabled.value && upcoming.size <= 3) {
+                    val seed = queueManager.queue.value.lastOrNull() ?: _currentSong.value ?: return@collect
+                    replenishAutoplayQueue(seed)
+                }
+            }
+        }
+
+        // Observe network events to retry pending reload on network recovery (Q4)
+        viewModelScope.launch {
+            playbackLogManager.networkEvents.collect { netType ->
+                if (netType != "Sin red" && autoplayReloadPending && queueManager.isAutoplayEnabled.value && queueManager.upNext.value.size <= 3) {
+                    val seed = queueManager.queue.value.lastOrNull() ?: _currentSong.value ?: return@collect
+                    replenishAutoplayQueue(seed)
+                }
+            }
+        }
 
         // ── BACKGROUND SYNC: Restore _currentSong from ExoPlayer when returning from background ──
         // CRITICAL FIX (Bug 3): Changed from one-shot to continuous sync.
@@ -1013,56 +1035,80 @@ class PlayerViewModel @Inject constructor(
      * - Interleaved round-robin (1 song per artist per round)
      * - First song guaranteed to be from a different artist than the current one
      */
-    private suspend fun replenishAutoplayQueue(song: Song) {
-        val allNewSongs = mutableListOf<Song>()
+    private suspend fun replenishAutoplayQueue(seedSong: Song) {
+        if (!queueManager.isAutoplayEnabled.value) return
+        if (queueManager.upNext.value.size > 3) return
+        if (!queueManager.tryBeginAutoplayReload()) {
+            autoplayReloadPending = false
+            return
+        }
 
-        // Source 1: Piped relatedStreams
         try {
-            val related = streamRepository.getRelatedSongs(song.id)
-            if (related is Resource.Success && !related.data.isNullOrEmpty()) {
-                allNewSongs.addAll(related.data)
-                Log.d(TAG, "PlayerVM: Source 1 (relatedStreams): ${related.data.size} songs")
-            }
-        } catch (cancelled: kotlinx.coroutines.CancellationException) {
-            throw cancelled
-        } catch (e: Exception) {
-            Log.w(TAG, "PlayerVM: Related fetch failed: ${e.message}")
-        }
+            val lastSong = queueManager.queue.value.lastOrNull() ?: seedSong
+            val allNewSongs = mutableListOf<Song>()
 
-        // Source 2: Fallback search if related returned < 5 songs
-        if (allNewSongs.size < 5) {
-            try {
-                val searchResult = streamRepository.searchSongs("${song.artist} canciones populares")
-                if (searchResult is Resource.Success && !searchResult.data.isNullOrEmpty()) {
-                    allNewSongs.addAll(searchResult.data)
-                    Log.d(TAG, "PlayerVM: Source 2 (search fallback): ${searchResult.data.size} songs")
+            val related1 = streamRepository.getRelatedSongs(lastSong.id)
+            if (related1 is Resource.Error) {
+                autoplayReloadPending = true
+                return
+            }
+            if (related1 is Resource.Success) {
+                if (related1.data.isNullOrEmpty()) {
+                    autoplayReloadPending = false
+                    return
                 }
-            } catch (cancelled: kotlinx.coroutines.CancellationException) {
-                throw cancelled
-            } catch (e: Exception) {
-                Log.w(TAG, "PlayerVM: Fallback search failed: ${e.message}")
+                allNewSongs.addAll(related1.data)
             }
-        }
 
-        val preferredArtists = try {
-            (favoritesRepository.getFavorites().first() + favoritesRepository.getMostPlayed().first())
-                .map { it.artist }
-        } catch (cancelled: kotlinx.coroutines.CancellationException) {
-            throw cancelled
+            val preferredArtists = try {
+                (favoritesRepository.getFavorites().first() + favoritesRepository.getMostPlayed().first())
+                    .map { it.artist }
+            } catch (_: Exception) {
+                emptyList()
+            }
+
+            val excludedIds = queueManager.playedIds + queueManager.queue.value.map { it.id }
+            var selected = SongRecommendationSelector.select(
+                candidates = allNewSongs,
+                seedBias = mapOf(lastSong.artist to 50L) + preferredArtists.associateWith { 100L },
+                excludedIds = excludedIds,
+                limit = 10
+            )
+
+            // Incomplete batch rule (Q1): if < 10, chain 1 more radio call from last added recommended song (max 2 extra calls)
+            var extraCalls = 0
+            while (selected.size < 10 && extraCalls < 2 && allNewSongs.isNotEmpty()) {
+                val nextSeed = selected.lastOrNull() ?: break
+                extraCalls++
+                val relatedNext = streamRepository.getRelatedSongs(nextSeed.id)
+                if (relatedNext is Resource.Success && !relatedNext.data.isNullOrEmpty()) {
+                    allNewSongs.addAll(relatedNext.data)
+                    val currentExcluded = queueManager.playedIds + queueManager.queue.value.map { it.id } + selected.map { it.id }
+                    val moreSelected = SongRecommendationSelector.select(
+                        candidates = allNewSongs,
+                        seedBias = mapOf(nextSeed.artist to 50L) + preferredArtists.associateWith { 100L },
+                        excludedIds = currentExcluded,
+                        limit = 10 - selected.size
+                    )
+                    if (moreSelected.isEmpty()) break
+                    selected = selected + moreSelected
+                } else {
+                    break
+                }
+            }
+
+            if (selected.isNotEmpty()) {
+                val addedCount = queueManager.appendAutoplayTracks(selected, limit = 10)
+                Log.d(TAG, "PlayerVM: Appended $addedCount autoplay tracks (${upNext.value.size} upcoming)")
+                autoplayReloadPending = false
+            } else {
+                autoplayReloadPending = false
+            }
         } catch (e: Exception) {
-            emptyList()
-        }
-
-        val selected = SongRecommendationSelector.select(
-            candidates = allNewSongs,
-            seedBias = mapOf(song.artist to 50L) + preferredArtists.associateWith { 100L },
-            excludedIds = queueManager.playedIds + song.id,
-            limit = 20
-        )
-
-        if (selected.isNotEmpty()) {
-            queueManager.appendAutoplayTracks(selected)
-            Log.d(TAG, "PlayerVM: Appended ${selected.size} autoplay tracks (${upNext.value.size} upcoming)")
+            Log.w(TAG, "PlayerVM: Autoplay reload failed due to network/error: ${e.message}")
+            autoplayReloadPending = true // Mark reload pending on network failure (Q4)
+        } finally {
+            queueManager.endAutoplayReload()
         }
     }
 
@@ -1291,20 +1337,7 @@ class PlayerViewModel @Inject constructor(
             if (nextSong != null) {
                 playInternal(nextSong)
             } else {
-                val seed = _currentSong.value ?: return@launch
-                val result = streamRepository.getRelatedSongs(seed.id)
-                val candidates = if (result is Resource.Success) result.data.orEmpty() else emptyList()
-                val autoplay = SongRecommendationSelector.select(
-                    candidates = candidates,
-                    seedBias = mapOf(seed.artist to 50L),
-                    excludedIds = queueManager.playedIds + seed.id,
-                    limit = 15
-                )
-                if (autoplay.isNotEmpty()) {
-                    queueManager.appendAutoplayTracks(autoplay)
-                    val autoplayNext = queueManager.skipToNext()
-                    if (autoplayNext != null) playInternal(autoplayNext)
-                }
+                playbackLogManager.log("PLAYBACK", "INFO", "Queue end reached and no next song available.")
             }
         }
     }

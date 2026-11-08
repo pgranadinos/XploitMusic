@@ -361,54 +361,68 @@ class BackgroundPlaybackNavigator @Inject constructor(
     private suspend fun nextCandidate(): Song? {
         queueManager.skipToNext()?.let { return it }
 
-        val seed = queueManager.currentTrack.value ?: return null
-        val related = try {
-            val related = streamRepository.getRelatedSongs(seed.id)
-            if (related is Resource.Success) related.data.orEmpty() else emptyList()
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (error: Exception) {
-            Log.w(TAG, "BackgroundNav: related fallback failed", error)
-            emptyList()
+        if (!queueManager.isAutoplayEnabled.value) {
+            Log.d(TAG, "BackgroundNav: Autoplay disabled; skipping background fetch")
+            return null
         }
 
-        val usefulRelated = SongRecommendationSelector.select(
-            candidates = related,
-            seedBias = mapOf(seed.artist to 50L),
-            excludedIds = queueManager.playedIds + seed.id,
-            limit = 10
-        )
-        val candidates = if (usefulRelated.size >= 5) {
-            related
-        } else {
-            try {
-                val search = streamRepository.searchSongs("${seed.artist} canciones populares")
-                if (search is Resource.Success) related + search.data.orEmpty() else related
+        if (!queueManager.awaitAutoplayReload(10_000L)) {
+            Log.d(TAG, "BackgroundNav: Autoplay reload lock in progress; timeout waiting for lock release")
+            return null
+        }
+
+        try {
+            val seed = queueManager.currentTrack.value ?: return null
+            val related = try {
+                val related = streamRepository.getRelatedSongs(seed.id)
+                if (related is Resource.Success) related.data.orEmpty() else emptyList()
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
-                Log.w(TAG, "BackgroundNav: search fallback failed", error)
-                related
+                Log.w(TAG, "BackgroundNav: related fallback failed", error)
+                emptyList()
             }
-        }
 
-        val preferredArtists = try {
-            (favoritesRepository.getFavorites().first() + favoritesRepository.getMostPlayed().first())
-                .map { it.artist }
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (error: Exception) {
-            Log.w(TAG, "BackgroundNav: listening profile unavailable", error)
-            emptyList()
+            val usefulRelated = SongRecommendationSelector.select(
+                candidates = related,
+                seedBias = mapOf(seed.artist to 50L),
+                excludedIds = queueManager.playedIds + seed.id,
+                limit = 10
+            )
+            val candidates = if (usefulRelated.size >= 5) {
+                related
+            } else {
+                try {
+                    val search = streamRepository.searchSongs("${seed.artist} canciones populares")
+                    if (search is Resource.Success) related + search.data.orEmpty() else related
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    Log.w(TAG, "BackgroundNav: search fallback failed", error)
+                    related
+                }
+            }
+
+            val preferredArtists = try {
+                (favoritesRepository.getFavorites().first() + favoritesRepository.getMostPlayed().first())
+                    .map { it.artist }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                Log.w(TAG, "BackgroundNav: listening profile unavailable", error)
+                emptyList()
+            }
+            val selected = SongRecommendationSelector.select(
+                candidates = candidates,
+                seedBias = mapOf(seed.artist to 50L) + preferredArtists.associateWith { 100L },
+                excludedIds = queueManager.playedIds + seed.id,
+                limit = 20
+            )
+            queueManager.appendAutoplayTracks(selected)
+            return queueManager.skipToNext()
+        } finally {
+            queueManager.endAutoplayReload()
         }
-        val selected = SongRecommendationSelector.select(
-            candidates = candidates,
-            seedBias = mapOf(seed.artist to 50L) + preferredArtists.associateWith { 100L },
-            excludedIds = queueManager.playedIds + seed.id,
-            limit = 20
-        )
-        queueManager.appendAutoplayTracks(selected)
-        return queueManager.skipToNext()
     }
 
     private suspend fun resolveSource(song: Song): ResolveResult {

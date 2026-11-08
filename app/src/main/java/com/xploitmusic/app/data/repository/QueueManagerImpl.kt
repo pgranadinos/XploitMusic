@@ -270,20 +270,50 @@ class QueueManagerImpl @Inject constructor() : QueueManager {
     // ── Autoplay ──
 
     @Synchronized
-    override fun appendAutoplayTracks(songs: List<Song>) {
-        val knownIds = _queue.value.mapTo(mutableSetOf()) { it.id }
+    override fun appendAutoplayTracks(songs: List<Song>, limit: Int): Int {
+        val currentTrackId = _currentTrack.value?.id
+        val upcomingIds = _upNext.value.mapTo(mutableSetOf()) { it.id }
         val availableSlots = (MAX_UPCOMING_TRACKS - _upNext.value.size).coerceAtLeast(0)
-        if (availableSlots == 0) return
-        val accepted = songs
-            .asSequence()
-            .filter { it.id !in _playedIds && knownIds.add(it.id) }
-            .take(availableSlots)
-            .toList()
-        if (accepted.isEmpty()) return
+        val effectiveLimit = limit.coerceAtMost(availableSlots)
+        if (effectiveLimit <= 0 || songs.isEmpty()) return 0
+
+        val accepted = mutableListOf<Song>()
+        for (song in songs) {
+            val id = song.id.trim()
+            if (id.isNotEmpty() && id != currentTrackId && id !in _playedIds && id !in upcomingIds) {
+                upcomingIds.add(id)
+                accepted.add(song)
+                if (accepted.size >= effectiveLimit) break
+            }
+        }
+
+        if (accepted.isEmpty()) return 0
+
         _queue.value = _queue.value + accepted
-        _originalQueue = _originalQueue + accepted
+        if (!_isShuffleEnabled.value) _originalQueue = _originalQueue + accepted
         updateUpNext()
-        Log.d(TAG, "QueueManager: appendAutoplayTracks(${accepted.size} new, ${_upNext.value.size} upcoming)")
+        Log.d(TAG, "QueueManager: appendAutoplayTracks added ${accepted.size} tracks (limit=$limit), ${_upNext.value.size} upcoming")
+        return accepted.size
+    }
+
+    private val _isAutoplayReloading = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    override fun tryBeginAutoplayReload(): Boolean {
+        return _isAutoplayReloading.compareAndSet(false, true)
+    }
+
+    override suspend fun awaitAutoplayReload(timeoutMs: Long): Boolean {
+        if (tryBeginAutoplayReload()) return true
+        val startTime = System.currentTimeMillis()
+        while (System.currentTimeMillis() - startTime < timeoutMs) {
+            kotlinx.coroutines.delay(250L)
+            if (tryBeginAutoplayReload()) return true
+        }
+        return false
+    }
+
+    override fun endAutoplayReload() {
+        _isAutoplayReloading.set(false)
     }
 
     @Synchronized
