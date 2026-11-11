@@ -22,8 +22,10 @@ palette = "1.0.0"
 newpipeExtractor = "v0.26.5"
 workManager = "2.9.0"
 hiltWork = "1.1.0"
+datastore = "1.1.1"
 
 [libraries]
+androidx-datastore-preferences = { module = "androidx.datastore:datastore-preferences", version.ref = "datastore" }
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 androidx-lifecycle-process = { group = "androidx.lifecycle", name = "lifecycle-process", version.ref = "lifecycleRuntimeKtx" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }

@@ -479,4 +479,15 @@ class QueueManagerImplTest {
         queueManager.endAutoplayReload()
         assertThat(queueManager.tryBeginAutoplayReload()).isTrue()
     }
+
+    @Test
+    fun `toggleAutoplay delegates to injected AutoplaySettings`() {
+        val fakeSettings = com.xploitmusic.app.data.local.InMemoryAutoplaySettings(initialValue = true)
+        val qm = QueueManagerImpl(autoplaySettings = fakeSettings)
+
+        assertThat(qm.isAutoplayEnabled.value).isTrue()
+        qm.toggleAutoplay()
+        assertThat(qm.isAutoplayEnabled.value).isFalse()
+        assertThat(fakeSettings.enabled.value).isFalse()
+    }
 }

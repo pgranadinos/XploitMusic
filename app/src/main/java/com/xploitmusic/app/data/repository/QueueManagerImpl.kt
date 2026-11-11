@@ -18,7 +18,11 @@ import javax.inject.Singleton
  * lifecycle-independent singleton.
  */
 @Singleton
-class QueueManagerImpl @Inject constructor() : QueueManager {
+class QueueManagerImpl @Inject constructor(
+    private val autoplaySettings: com.xploitmusic.app.domain.repository.AutoplaySettings
+) : QueueManager {
+
+    constructor() : this(com.xploitmusic.app.data.local.InMemoryAutoplaySettings())
 
     companion object {
         private const val TAG = "XploitDebug"
@@ -32,7 +36,6 @@ class QueueManagerImpl @Inject constructor() : QueueManager {
     private val _upNext = MutableStateFlow<List<Song>>(emptyList())
     private val _repeatMode = MutableStateFlow(RepeatMode.OFF)
     private val _isShuffleEnabled = MutableStateFlow(false)
-    private val _isAutoplayEnabled = MutableStateFlow(true)
     private val _playedIds = java.util.Collections.synchronizedSet(mutableSetOf<String>())
 
     // Original (unshuffled) order — kept for unshuffle restore
@@ -46,7 +49,7 @@ class QueueManagerImpl @Inject constructor() : QueueManager {
     override val upNext: StateFlow<List<Song>> = _upNext.asStateFlow()
     override val repeatMode: StateFlow<RepeatMode> = _repeatMode.asStateFlow()
     override val isShuffleEnabled: StateFlow<Boolean> = _isShuffleEnabled.asStateFlow()
-    override val isAutoplayEnabled: StateFlow<Boolean> = _isAutoplayEnabled.asStateFlow()
+    override val isAutoplayEnabled: StateFlow<Boolean> = autoplaySettings.enabled
     override val playedIds: Set<String>
         get() = synchronized(_playedIds) { _playedIds.toSet() }
 
@@ -263,8 +266,8 @@ class QueueManagerImpl @Inject constructor() : QueueManager {
 
     @Synchronized
     override fun toggleAutoplay() {
-        _isAutoplayEnabled.value = !_isAutoplayEnabled.value
-        Log.d(TAG, "QueueManager: toggleAutoplay() → ${_isAutoplayEnabled.value}")
+        autoplaySettings.toggle()
+        Log.d(TAG, "QueueManager: toggleAutoplay() executed")
     }
 
     // ── Autoplay ──

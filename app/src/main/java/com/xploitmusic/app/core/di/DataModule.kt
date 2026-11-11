@@ -1,5 +1,10 @@
 package com.xploitmusic.app.core.di
 
+import android.content.Context
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.preferencesDataStoreFile
 import com.xploitmusic.app.data.repository.FavoritesRepositoryImpl
 import com.xploitmusic.app.data.repository.LocalAudioRepositoryImpl
 import com.xploitmusic.app.data.repository.PlayHistoryRepositoryImpl
@@ -18,7 +23,9 @@ import com.xploitmusic.app.domain.repository.SearchHistoryRepository
 import com.xploitmusic.app.domain.repository.StreamRepository
 import dagger.Binds
 import dagger.Module
+import dagger.Provides
 import dagger.hilt.InstallIn
+import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import javax.inject.Singleton
 
@@ -56,4 +63,20 @@ abstract class DataModule {
     @Binds
     @Singleton
     abstract fun bindPlayHistoryRepository(impl: PlayHistoryRepositoryImpl): PlayHistoryRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindAutoplaySettings(impl: com.xploitmusic.app.data.local.DataStoreAutoplaySettings): com.xploitmusic.app.domain.repository.AutoplaySettings
+
+    companion object {
+        @Provides
+        @Singleton
+        fun provideAutoplayDataStore(
+            @ApplicationContext context: Context
+        ): DataStore<Preferences> {
+            return PreferenceDataStoreFactory.create(
+                produceFile = { context.preferencesDataStoreFile("xploit_settings") }
+            )
+        }
+    }
 }
