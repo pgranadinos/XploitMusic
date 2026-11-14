@@ -490,4 +490,55 @@ class QueueManagerImplTest {
         assertThat(qm.isAutoplayEnabled.value).isFalse()
         assertThat(fakeSettings.enabled.value).isFalse()
     }
+
+    @Test
+    fun `appendAutoplayTracks registers ids in recommendedIds`() {
+        queueManager.setQueue(listOf(song("curr")), startIndex = 0)
+        queueManager.appendAutoplayTracks(listOf(song("rec1"), song("rec2")), limit = 10)
+        assertThat(queueManager.recommendedIds.value).containsExactly("rec1", "rec2")
+    }
+
+    @Test
+    fun `setQueue clears recommendedIds`() {
+        queueManager.setQueue(listOf(song("curr")), startIndex = 0)
+        queueManager.appendAutoplayTracks(listOf(song("rec1")), limit = 10)
+        assertThat(queueManager.recommendedIds.value).contains("rec1")
+
+        queueManager.setQueue(listOf(song("new1")), startIndex = 0)
+        assertThat(queueManager.recommendedIds.value).isEmpty()
+    }
+
+    @Test
+    fun `removeFromQueue removes recommended id`() {
+        queueManager.setQueue(listOf(song("curr")), startIndex = 0)
+        queueManager.appendAutoplayTracks(listOf(song("rec1"), song("rec2")), limit = 10)
+
+        val rec1Index = queueManager.queue.value.indexOfFirst { it.id == "rec1" }
+        queueManager.removeFromQueue(rec1Index)
+
+        assertThat(queueManager.recommendedIds.value).containsExactly("rec2")
+    }
+
+    @Test
+    fun `addToEndOfQueue removes id from recommendedIds`() {
+        queueManager.setQueue(listOf(song("curr")), startIndex = 0)
+        queueManager.appendAutoplayTracks(listOf(song("rec1")), limit = 10)
+
+        queueManager.addToEndOfQueue(song("rec1"))
+
+        assertThat(queueManager.recommendedIds.value).doesNotContain("rec1")
+    }
+
+    @Test
+    fun `clearUpcoming retains only current track id in recommendedIds if present`() {
+        queueManager.setQueue(listOf(song("curr")), startIndex = 0)
+        queueManager.appendAutoplayTracks(listOf(song("rec1"), song("rec2")), limit = 10)
+
+        queueManager.skipToNext()
+        assertThat(queueManager.currentTrack.value?.id).isEqualTo("rec1")
+
+        queueManager.clearUpcoming()
+
+        assertThat(queueManager.recommendedIds.value).containsExactly("rec1")
+    }
 }

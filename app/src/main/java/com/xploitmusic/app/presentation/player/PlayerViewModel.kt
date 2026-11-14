@@ -28,6 +28,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
@@ -79,6 +80,23 @@ class PlayerViewModel @Inject constructor(
     val isLyricsLoading: StateFlow<Boolean> = _isLyricsLoading.asStateFlow()
 
     val upNext: StateFlow<List<Song>> = queueManager.upNext
+
+    val songOriginTags: StateFlow<Map<String, com.xploitmusic.app.domain.model.SongOrigin>> = combine(
+        _currentSong,
+        queueManager.upNext,
+        favoritesRepository.getFavorites(),
+        offlineManager.getCompletedDownloads(),
+        queueManager.recommendedIds
+    ) { current, upcoming, favs, downloads, recommended ->
+        (listOfNotNull(current) + upcoming).mapNotNull { song ->
+            com.xploitmusic.app.domain.recommendation.SongOriginResolver.resolve(
+                song.id,
+                downloads,
+                favs,
+                recommended
+            )?.let { song.id to it }
+        }.toMap()
+    }.stateIn(viewModelScope, SharingStarted.Lazily, emptyMap())
 
     private var autoplayReloadPending = false
 

@@ -37,6 +37,7 @@ class QueueManagerImpl @Inject constructor(
     private val _repeatMode = MutableStateFlow(RepeatMode.OFF)
     private val _isShuffleEnabled = MutableStateFlow(false)
     private val _playedIds = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+    private val _recommendedIds = MutableStateFlow<Set<String>>(emptySet())
 
     // Original (unshuffled) order — kept for unshuffle restore
     private var _originalQueue: List<Song> = emptyList()
@@ -52,6 +53,7 @@ class QueueManagerImpl @Inject constructor(
     override val isAutoplayEnabled: StateFlow<Boolean> = autoplaySettings.enabled
     override val playedIds: Set<String>
         get() = synchronized(_playedIds) { _playedIds.toSet() }
+    override val recommendedIds: StateFlow<Set<String>> = _recommendedIds.asStateFlow()
 
     // ── Queue Manipulation ──
 
@@ -71,6 +73,7 @@ class QueueManagerImpl @Inject constructor(
 
         _queue.value = ordered
         _currentIndex.value = if (_isShuffleEnabled.value && songs.isNotEmpty()) 0 else idx
+        _recommendedIds.value = emptySet()
         updateCurrent()
         Log.d(TAG, "QueueManager: setQueue(${songs.size} songs, startIndex=$idx)")
     }
@@ -90,6 +93,7 @@ class QueueManagerImpl @Inject constructor(
         } else {
             _originalQueue = q
         }
+        _recommendedIds.value = _recommendedIds.value - song.id
         updateUpNext()
         Log.d(TAG, "QueueManager: addToUpNext('${song.title}') at position $insertAt")
     }
@@ -98,6 +102,7 @@ class QueueManagerImpl @Inject constructor(
     override fun addToEndOfQueue(song: Song) {
         _queue.value = _queue.value + song
         _originalQueue = _originalQueue + song
+        _recommendedIds.value = _recommendedIds.value - song.id
         updateUpNext()
         Log.d(TAG, "QueueManager: addToEndOfQueue('${song.title}')")
     }
@@ -127,6 +132,12 @@ class QueueManagerImpl @Inject constructor(
             index == ci -> ci.coerceAtMost(q.lastIndex)
             else -> ci
         }
+
+        val remainingIds = _queue.value.mapTo(mutableSetOf()) { it.id }
+        if (removed.id !in remainingIds) {
+            _recommendedIds.value = _recommendedIds.value - removed.id
+        }
+
         updateCurrent()
         Log.d(TAG, "QueueManager: removeFromQueue($index)")
     }
@@ -164,6 +175,8 @@ class QueueManagerImpl @Inject constructor(
         } else {
             kept
         }
+        val currentId = _currentTrack.value?.id
+        _recommendedIds.value = if (currentId != null && currentId in _recommendedIds.value) setOf(currentId) else emptySet()
         updateUpNext()
         Log.d(TAG, "QueueManager: clearUpcoming()")
     }
@@ -294,6 +307,7 @@ class QueueManagerImpl @Inject constructor(
 
         _queue.value = _queue.value + accepted
         if (!_isShuffleEnabled.value) _originalQueue = _originalQueue + accepted
+        _recommendedIds.value = _recommendedIds.value + accepted.map { it.id }
         updateUpNext()
         Log.d(TAG, "QueueManager: appendAutoplayTracks added ${accepted.size} tracks (limit=$limit), ${_upNext.value.size} upcoming")
         return accepted.size

@@ -2,16 +2,19 @@ package com.xploitmusic.app.presentation.player
 
 import com.google.common.truth.Truth.assertThat
 import com.xploitmusic.app.domain.model.Song
+import com.xploitmusic.app.domain.model.SongOrigin
 import com.xploitmusic.app.domain.repository.QueueManager
 import com.xploitmusic.app.data.repository.QueueManagerImpl
 import com.xploitmusic.app.core.util.Resource
 import com.xploitmusic.app.data.service.SkipHandler
 import com.xploitmusic.app.data.repository.OfflineManager
+import com.xploitmusic.app.data.local.entity.DownloadedTrackEntity
 import io.mockk.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.*
 import org.junit.After
 import org.junit.Before
@@ -22,11 +25,26 @@ class PlayerViewModelAutoplayTest {
 
     private val testDispatcher = StandardTestDispatcher()
     private lateinit var queueManager: QueueManager
+    private val mockStreamRepo: com.xploitmusic.app.domain.repository.StreamRepository = mockk(relaxed = true)
     private val networkEventsFlow = MutableSharedFlow<String>(replay = 1)
     private val networkTypeFlow = MutableStateFlow("Wi-Fi")
 
     private fun song(id: String, title: String = "Song $id", artist: String = "Artist"): Song =
         Song(id, title, artist, "", 180)
+
+    private fun downloadedTrack(songId: String, status: String): DownloadedTrackEntity =
+        DownloadedTrackEntity(
+            songId = songId,
+            title = "Song $songId",
+            artist = "Artist",
+            thumbnailUrl = "",
+            durationSeconds = 180,
+            status = status,
+            quality = "HIGH",
+            filePath = "/path/$songId",
+            fileSizeBytes = 1000L,
+            lastAccessedAt = System.currentTimeMillis()
+        )
 
     @Before
     fun setUp() {
@@ -34,14 +52,16 @@ class PlayerViewModelAutoplayTest {
         queueManager = QueueManagerImpl()
     }
 
-    private fun createViewModel(streamRepo: com.xploitmusic.app.domain.repository.StreamRepository): PlayerViewModel {
+    private fun createViewModel(
+        streamRepo: com.xploitmusic.app.domain.repository.StreamRepository = mockStreamRepo,
+        favoritesRepo: com.xploitmusic.app.domain.repository.FavoritesRepository = mockk(relaxed = true),
+        offlineMgr: OfflineManager = mockk(relaxed = true)
+    ): PlayerViewModel {
         val mockPlayerRepo: com.xploitmusic.app.domain.repository.PlayerRepository = mockk(relaxed = true)
-        val mockFavoritesRepo: com.xploitmusic.app.domain.repository.FavoritesRepository = mockk(relaxed = true)
         val mockPlaybackLogManager: com.xploitmusic.app.core.util.PlaybackLogManager = mockk(relaxed = true) {
             coEvery { currentNetworkType } returns networkTypeFlow
             coEvery { networkEvents } returns networkEventsFlow
         }
-        val mockOfflineManager: OfflineManager = mockk(relaxed = true)
         val mockAnalyticsLogger: com.xploitmusic.app.core.analytics.XploitAnalyticsLogger = mockk(relaxed = true)
         val mockPlaylistRepo: com.xploitmusic.app.domain.repository.PlaylistRepository = mockk(relaxed = true)
         val mockGetStream = mockk<com.xploitmusic.app.domain.usecase.GetAudioStreamUseCase>(relaxed = true)
@@ -54,12 +74,12 @@ class PlayerViewModelAutoplayTest {
             getAudioStreamUseCase = mockGetStream,
             getLyricsUseCase = mockGetLyrics,
             toggleFavoriteUseCase = mockToggleFav,
-            favoritesRepository = mockFavoritesRepo,
+            favoritesRepository = favoritesRepo,
             streamRepository = streamRepo,
             skipHandler = mockSkipHandler,
             playlistRepository = mockPlaylistRepo,
             queueManager = queueManager,
-            offlineManager = mockOfflineManager,
+            offlineManager = offlineMgr,
             analyticsLogger = mockAnalyticsLogger,
             playbackLogManager = mockPlaybackLogManager
         )
@@ -192,5 +212,59 @@ class PlayerViewModelAutoplayTest {
         queueManager.markAsPlayed("1")
         val added = queueManager.appendAutoplayTracks(listOf(song("1")), limit = 10)
         assertThat(added).isEqualTo(0)
+    }
+
+    @Test
+    fun `songOriginTags updates reactively when currentSong, queue, favorites, or downloads change`() = runTest(testDispatcher) {
+        val favFlow = MutableStateFlow<List<Song>>(emptyList())
+        val downloadFlow = MutableStateFlow<List<DownloadedTrackEntity>>(emptyList())
+
+        val mockFavoritesRepo = mockk<com.xploitmusic.app.domain.repository.FavoritesRepository>(relaxed = true)
+        val mockOfflineManager = mockk<OfflineManager>(relaxed = true)
+
+        every { mockFavoritesRepo.getFavorites() } returns favFlow
+        every { mockOfflineManager.getCompletedDownloads() } returns downloadFlow
+
+        val vm = createViewModel(streamRepo = mockStreamRepo, favoritesRepo = mockFavoritesRepo, offlineMgr = mockOfflineManager)
+
+        // Activar la suscripción a SharingStarted.Lazily
+        backgroundScope.launch { vm.songOriginTags.collect {} }
+        runCurrent()
+
+        // Configurar descarga completada
+        downloadFlow.value = listOf(downloadedTrack("dl_1", status = "COMPLETED"))
+
+        // 1. Asignar canción actual vía producción (playSingleSong llama a setQueue en línea 712)
+        vm.playSingleSong(song("dl_1"))
+        runCurrent()
+
+        // 2. Añadir fav_1 a la cola y rec_1 como recomendada
+        queueManager.addToUpNext(song("fav_1"))
+        queueManager.appendAutoplayTracks(listOf(song("rec_1")), limit = 10)
+        favFlow.value = listOf(song("fav_1"))
+        runCurrent()
+
+        // Verificar canción actual y etiquetas iniciales
+        assertThat(vm.currentSong.value?.id).isEqualTo("dl_1")
+        assertThat(vm.songOriginTags.value["dl_1"]).isEqualTo(SongOrigin.DOWNLOAD)
+        assertThat(vm.songOriginTags.value["fav_1"]).isEqualTo(SongOrigin.FAVORITE)
+        assertThat(vm.songOriginTags.value["rec_1"]).isEqualTo(SongOrigin.RECOMMENDED)
+
+        // Mutar favoritos: quitar fav_1 -> la etiqueta desaparece
+        favFlow.value = emptyList()
+        runCurrent()
+        assertThat(vm.songOriginTags.value["fav_1"]).isNull()
+
+        // Mutar prioridad: añadir dl_1 a favoritos -> prioridad DOWNLOAD se mantiene sobre FAVORITE
+        favFlow.value = listOf(song("dl_1"))
+        runCurrent()
+        assertThat(vm.songOriginTags.value["dl_1"]).isEqualTo(SongOrigin.DOWNLOAD)
+
+        // Mutar cola: remover rec_1 usando su índice real (indexOfFirst) -> etiqueta recomendada se elimina
+        val recIndex = queueManager.queue.value.indexOfFirst { it.id == "rec_1" }
+        assertThat(recIndex).isAtLeast(0)
+        queueManager.removeFromQueue(recIndex)
+        runCurrent()
+        assertThat(vm.songOriginTags.value["rec_1"]).isNull()
     }
 }

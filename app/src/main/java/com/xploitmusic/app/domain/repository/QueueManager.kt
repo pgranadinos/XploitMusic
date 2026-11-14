@@ -39,6 +39,9 @@ interface QueueManager {
     /** IDs of songs already played (for autoplay dedup) */
     val playedIds: Set<String>
 
+    /** IDs of songs added via autoplay recommendation in memory */
+    val recommendedIds: StateFlow<Set<String>>
+
     // ── Queue Manipulation ──
 
     /** Replace the entire queue with [songs], starting at [startIndex] */

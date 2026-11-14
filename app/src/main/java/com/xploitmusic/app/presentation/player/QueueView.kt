@@ -22,6 +22,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.xploitmusic.app.domain.model.Song
+import com.xploitmusic.app.domain.model.SongOrigin
 import org.burnoutcrew.reorderable.*
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -31,6 +32,7 @@ fun QueueView(
     onMove: (from: Int, to: Int) -> Unit,
     onRemove: (index: Int) -> Unit,
     onItemClick: (index: Int) -> Unit = {},
+    originTags: Map<String, SongOrigin> = emptyMap(),
     modifier: Modifier = Modifier
 ) {
     if (upNext.isEmpty()) {
@@ -119,13 +121,26 @@ fun QueueView(
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
-                                Text(
-                                    text = song.artist,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Text(
+                                        text = song.artist,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f, fill = false)
+                                    )
+                                    originTags[song.id]?.let { origin ->
+                                        Text(
+                                            text = origin.label,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
+                                        )
+                                    }
+                                }
                             }
                             Icon(
                                 Icons.Default.DragHandle,

@@ -73,6 +73,7 @@ fun PlayerScreen(
     val isShuffleEnabled by viewModel.isShuffleEnabled.collectAsState()
     val repeatMode by viewModel.repeatMode.collectAsState()
     val upNext by viewModel.upNext.collectAsState()
+    val songOriginTags by viewModel.songOriginTags.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
 
@@ -201,6 +202,7 @@ fun PlayerScreen(
                             downloadStatus = if (song.id.startsWith("local_")) "LOCAL" else downloadState?.status,
                             downloadProgress = downloadState?.progress ?: 0,
                             accent = steelBlue,
+                            currentOrigin = songOriginTags[song.id],
                             onLyricsClick = {
                                 viewModel.requestLyrics()
                                 showLyricsSheet = true
@@ -241,6 +243,7 @@ fun PlayerScreen(
                         downloadStatus = if (song.id.startsWith("local_")) "LOCAL" else downloadState?.status,
                         downloadProgress = downloadState?.progress ?: 0,
                         accent = steelBlue,
+                        currentOrigin = songOriginTags[song.id],
                         onLyricsClick = {
                             viewModel.requestLyrics()
                             showLyricsSheet = true
@@ -315,6 +318,7 @@ fun PlayerScreen(
                 onMove = { from, to -> viewModel.moveSongInQueue(from, to) },
                 onRemove = { idx -> viewModel.removeSongFromQueue(idx) },
                 onItemClick = { idx -> viewModel.playQueueItem(idx) },
+                originTags = songOriginTags,
                 modifier = Modifier.fillMaxSize()
             )
         }
@@ -453,6 +457,7 @@ private fun PlayerDetails(
     onPlaylistClick: () -> Unit,
     onFavoriteClick: () -> Unit,
     onDownloadClick: () -> Unit,
+    currentOrigin: com.xploitmusic.app.domain.model.SongOrigin? = null,
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -476,6 +481,14 @@ private fun PlayerDetails(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+                currentOrigin?.let { origin ->
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = origin.label,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
+                    )
+                }
             }
             AnimatedFavoriteButton(isFavorite = isFavorite, onClick = onFavoriteClick)
         }
