@@ -31,7 +31,8 @@ object DatabaseModule {
             XploitDatabase.MIGRATION_6_7,
             XploitDatabase.MIGRATION_7_8,
             XploitDatabase.MIGRATION_8_9,
-            XploitDatabase.MIGRATION_9_10
+            XploitDatabase.MIGRATION_9_10,
+            XploitDatabase.MIGRATION_10_11
         )
 
         if (com.xploitmusic.app.BuildConfig.DEBUG) {

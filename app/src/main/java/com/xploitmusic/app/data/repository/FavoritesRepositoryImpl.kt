@@ -26,7 +26,6 @@ class FavoritesRepositoryImpl @Inject constructor(
         val existing = songDao.getSongById(song.id)
 
         if (existing != null) {
-            // Song exists → toggle its favorite status
             val newFavorite = !existing.isFavorite
             songDao.setFavorite(
                 songId = song.id,
@@ -35,10 +34,14 @@ class FavoritesRepositoryImpl @Inject constructor(
             )
             return newFavorite
         } else {
-            // Song not in DB → insert as favorite
-            songDao.insertSong(song.toEntity(isFavorite = true))
+            val minPos = (songDao.getFavoritesList().minOfOrNull { it.favoritePosition } ?: 0) - 1
+            songDao.insertSong(song.toEntity(isFavorite = true, favoritePosition = minPos))
             return true
         }
+    }
+
+    override suspend fun moveFavorite(fromPosition: Int, toPosition: Int) {
+        songDao.moveFavorite(fromPosition, toPosition)
     }
 
     override fun getDistinctFavoriteArtists(): Flow<List<String>> {
@@ -52,7 +55,7 @@ class FavoritesRepositoryImpl @Inject constructor(
     override suspend fun recordPlay(song: Song) {
         val existing = songDao.getSongById(song.id)
         if (existing == null) {
-            songDao.insertSong(song.toEntity(isFavorite = false))
+            songDao.insertSong(song.toEntity(isFavorite = false, favoritePosition = 0))
         }
         songDao.recordPlay(song.id, System.currentTimeMillis())
     }
@@ -81,7 +84,7 @@ class FavoritesRepositoryImpl @Inject constructor(
         genre = genre
     )
 
-    private fun Song.toEntity(isFavorite: Boolean): SongEntity = SongEntity(
+    private fun Song.toEntity(isFavorite: Boolean, favoritePosition: Int = 0): SongEntity = SongEntity(
         id = id,
         title = title,
         artist = artist,
@@ -91,6 +94,7 @@ class FavoritesRepositoryImpl @Inject constructor(
         genre = genre,
         isFavorite = isFavorite,
         likedAt = if (isFavorite) System.currentTimeMillis() else null,
-        lastPlayedAt = null
+        lastPlayedAt = null,
+        favoritePosition = favoritePosition
     )
 }

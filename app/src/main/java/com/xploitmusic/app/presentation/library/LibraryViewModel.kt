@@ -119,4 +119,11 @@ class LibraryViewModel @Inject constructor(
             favoritesRepository.toggleFavorite(song)
         }
     }
+
+    fun reorderFavorites(fromPosition: Int, toPosition: Int) {
+        viewModelScope.launch {
+            favoritesRepository.moveFavorite(fromPosition, toPosition)
+            Log.d(TAG, "LibraryVM: Reordered favorites from $fromPosition to $toPosition")
+        }
+    }
 }

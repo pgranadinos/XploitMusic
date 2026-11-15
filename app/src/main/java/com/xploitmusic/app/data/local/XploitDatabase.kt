@@ -28,7 +28,7 @@ import com.xploitmusic.app.data.local.entity.SpotifyTokenEntity
         PlayHistoryEntity::class,
         SpotifyTokenEntity::class
     ],
-    version = 10,
+    version = 11,
     exportSchema = true
 )
 abstract class XploitDatabase : RoomDatabase() {
@@ -40,6 +40,18 @@ abstract class XploitDatabase : RoomDatabase() {
     abstract fun spotifyTokenDao(): SpotifyTokenDao
 
     companion object {
+        const val BACKFILL_FAVORITE_POSITION_SQL = """
+            UPDATE songs SET favoritePosition = (
+                SELECT COUNT(*) FROM songs AS s2
+                WHERE s2.isFavorite = 1
+                AND (
+                    COALESCE(s2.likedAt, 0) > COALESCE(songs.likedAt, 0)
+                    OR (COALESCE(s2.likedAt, 0) = COALESCE(songs.likedAt, 0) AND s2.id < songs.id)
+                )
+            )
+            WHERE isFavorite = 1
+        """
+
         val MIGRATION_6_7 = object : Migration(6, 7) {
             override fun migrate(database: SupportSQLiteDatabase) {
                 database.execSQL("ALTER TABLE songs ADD COLUMN playCount INTEGER NOT NULL DEFAULT 0")
@@ -79,6 +91,13 @@ abstract class XploitDatabase : RoomDatabase() {
                     "CREATE UNIQUE INDEX IF NOT EXISTS `index_playlists_source_sourceId` " +
                         "ON `playlists` (`source`, `sourceId`)"
                 )
+            }
+        }
+
+        val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE songs ADD COLUMN favoritePosition INTEGER NOT NULL DEFAULT 0")
+                database.execSQL(BACKFILL_FAVORITE_POSITION_SQL)
             }
         }
     }

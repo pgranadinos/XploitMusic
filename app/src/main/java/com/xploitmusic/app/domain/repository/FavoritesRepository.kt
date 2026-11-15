@@ -5,7 +5,7 @@ import kotlinx.coroutines.flow.Flow
 
 interface FavoritesRepository {
 
-    /** Observe all favorited songs, ordered by most recently liked */
+    /** Observe all favorited songs, ordered by manual favoritePosition */
     fun getFavorites(): Flow<List<Song>>
 
     /** Observe whether a specific song is favorited */
@@ -13,6 +13,9 @@ interface FavoritesRepository {
 
     /** Toggle the favorite status of a song. Returns the new isFavorite state. */
     suspend fun toggleFavorite(song: Song): Boolean
+
+    /** Move a favorite song from [fromPosition] to [toPosition] */
+    suspend fun moveFavorite(fromPosition: Int, toPosition: Int)
 
     /** Get distinct artist names from favorites (for recommendation engine) */
     fun getDistinctFavoriteArtists(): Flow<List<String>>

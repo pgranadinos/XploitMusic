@@ -9,6 +9,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -58,6 +59,11 @@ fun LibraryScreen(
     val favorites by viewModel.favorites.collectAsState()
     val recents by viewModel.recents.collectAsState()
     val mostPlayed by viewModel.mostPlayed.collectAsState()
+
+    val favReorderState = rememberReorderableLazyListState(onMove = { from, to ->
+        viewModel.reorderFavorites(from.index, to.index)
+    })
+    val plainListState = rememberLazyListState()
 
     var selectedTab by remember { mutableStateOf(LibraryTab.PLAYLISTS) }
     var playlistPendingDeletion by remember { mutableStateOf<PlaylistWithSongs?>(null) }
@@ -231,7 +237,8 @@ fun LibraryScreen(
                     }
 
                     LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
+                        state = if (selectedTab == LibraryTab.FAVORITES) favReorderState.listState else plainListState,
+                        modifier = if (selectedTab == LibraryTab.FAVORITES) Modifier.fillMaxSize().reorderable(favReorderState) else Modifier.fillMaxSize(),
                         contentPadding = PaddingValues(bottom = 24.dp)
                     ) {
                         when (selectedTab) {
@@ -261,8 +268,22 @@ fun LibraryScreen(
                                 if (favorites.isEmpty()) {
                                     item { EmptyState(Icons.Default.FavoriteBorder, "Sin favoritos", "Toca el corazón en el reproductor") }
                                 } else {
-                                    items(favorites) { song ->
-                                        SongListItem(song, { onSongClick(song, favorites) }, Modifier.padding(horizontal = 8.dp))
+                                    items(favorites, key = { it.id }) { song ->
+                                        ReorderableItem(favReorderState, key = song.id) { isDragging ->
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(horizontal = 8.dp, vertical = 2.dp)
+                                                    .clip(MaterialTheme.shapes.medium)
+                                                    .detectReorderAfterLongPress(favReorderState)
+                                                    .background(
+                                                        if (isDragging) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+                                                        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f)
+                                                    )
+                                            ) {
+                                                SongListItem(song, { onSongClick(song, favorites) })
+                                            }
+                                        }
                                     }
                                 }
                             }
