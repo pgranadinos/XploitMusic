@@ -15,6 +15,7 @@ import com.xploitmusic.app.domain.repository.FavoritesRepository
 import com.xploitmusic.app.domain.repository.PlayerRepository
 import com.xploitmusic.app.domain.repository.QueueManager
 import com.xploitmusic.app.domain.repository.StreamRepository
+import com.xploitmusic.app.domain.recommendation.AutoplaySeeds
 import com.xploitmusic.app.domain.recommendation.SongRecommendationSelector
 import com.xploitmusic.app.domain.usecase.GetAudioStreamUseCase
 import com.xploitmusic.app.domain.usecase.ToggleFavoriteUseCase
@@ -99,6 +100,7 @@ class PlayerViewModel @Inject constructor(
     }.stateIn(viewModelScope, SharingStarted.Lazily, emptyMap())
 
     private var autoplayReloadPending = false
+    private var originalPlaylist: List<Song> = emptyList()
 
     // QueueManager keeps this setting alive after the UI lifecycle ends.
     val autoplayEnabled: StateFlow<Boolean> = queueManager.isAutoplayEnabled
@@ -687,6 +689,7 @@ class PlayerViewModel @Inject constructor(
         } else {
             listOf(song) + playlist
         }
+        originalPlaylist = playlist.ifEmpty { listOf(song) }
         val startIndex = requestedQueue.indexOfFirst { it.id == song.id }
         queueManager.setQueue(requestedQueue, startIndex)
         val generation = ++_playGeneration
@@ -727,6 +730,7 @@ class PlayerViewModel @Inject constructor(
         _historyCursor = -1
         _historyStack.clear()
         queueManager.resetPlayedHistory()
+        originalPlaylist = listOf(song)
         queueManager.setQueue(listOf(song), startIndex = 0)
         val generation = ++_playGeneration
         _playInternalJob = viewModelScope.launch {
@@ -1062,20 +1066,35 @@ class PlayerViewModel @Inject constructor(
         }
 
         try {
-            val lastSong = queueManager.queue.value.lastOrNull() ?: seedSong
-            val allNewSongs = mutableListOf<Song>()
-
-            val related1 = streamRepository.getRelatedSongs(lastSong.id)
-            if (related1 is Resource.Error) {
-                autoplayReloadPending = true
+            val seeds = AutoplaySeeds.select(originalPlaylist.ifEmpty { listOf(seedSong) })
+            if (seeds.isEmpty()) {
+                autoplayReloadPending = false
                 return
             }
-            if (related1 is Resource.Success) {
-                if (related1.data.isNullOrEmpty()) {
-                    autoplayReloadPending = false
-                    return
+
+            val allNewSongs = mutableListOf<Song>()
+            val seenCandidateIds = mutableSetOf<String>()
+            var hadError = false
+
+            for (seed in seeds) {
+                when (val result = streamRepository.getRelatedSongs(seed.id)) {
+                    is Resource.Success -> {
+                        result.data?.forEach { song ->
+                            if (seenCandidateIds.add(song.id)) {
+                                allNewSongs.add(song)
+                            }
+                        }
+                    }
+                    is Resource.Error -> {
+                        hadError = true
+                    }
+                    else -> Unit
                 }
-                allNewSongs.addAll(related1.data)
+            }
+
+            if (allNewSongs.isEmpty()) {
+                autoplayReloadPending = hadError
+                return
             }
 
             val preferredArtists = try {
@@ -1088,7 +1107,7 @@ class PlayerViewModel @Inject constructor(
             val excludedIds = queueManager.playedIds + queueManager.queue.value.map { it.id }
             var selected = SongRecommendationSelector.select(
                 candidates = allNewSongs,
-                seedBias = mapOf(lastSong.artist to 50L) + preferredArtists.associateWith { 100L },
+                seedBias = seeds.associate { it.artist to 50L } + preferredArtists.associateWith { 100L },
                 excludedIds = excludedIds,
                 limit = 10
             )

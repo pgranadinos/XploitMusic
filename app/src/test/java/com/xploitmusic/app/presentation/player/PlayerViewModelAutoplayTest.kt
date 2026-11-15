@@ -267,4 +267,25 @@ class PlayerViewModelAutoplayTest {
         runCurrent()
         assertThat(vm.songOriginTags.value["rec_1"]).isNull()
     }
+
+    @Test
+    fun `al tocar una lista de 12 canciones y agotar la cola getRelatedSongs se llama para las semillas 0, 3, 6, 9 y 11`() = runTest(testDispatcher) {
+        val streamRepo = mockk<com.xploitmusic.app.domain.repository.StreamRepository>(relaxed = true)
+        coEvery { streamRepo.getRelatedSongs(any()) } returns Resource.Success(emptyList())
+
+        val songs12 = (0 until 12).map { song("$it", "Song $it", "Artist $it") }
+        val vm = createViewModel(streamRepo)
+
+        vm.playSong(songs12[0], songs12)
+        runCurrent()
+
+        queueManager.skipToIndex(11)
+        runCurrent()
+
+        coVerify(exactly = 1) { streamRepo.getRelatedSongs("0") }
+        coVerify(exactly = 1) { streamRepo.getRelatedSongs("3") }
+        coVerify(exactly = 1) { streamRepo.getRelatedSongs("6") }
+        coVerify(exactly = 1) { streamRepo.getRelatedSongs("9") }
+        coVerify(exactly = 1) { streamRepo.getRelatedSongs("11") }
+    }
 }
