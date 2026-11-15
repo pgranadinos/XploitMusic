@@ -16,7 +16,7 @@ interface DownloadDao {
     fun getAll(): Flow<List<DownloadedTrackEntity>>
 
     /** Only completed downloads for offline library */
-    @Query("SELECT * FROM downloaded_tracks WHERE status = 'COMPLETED' ORDER BY lastAccessedAt DESC")
+    @Query("SELECT * FROM downloaded_tracks WHERE status = 'COMPLETED' ORDER BY downloadedAt DESC")
     fun getCompleted(): Flow<List<DownloadedTrackEntity>>
 
     /** Active downloads (queued, downloading, paused) */
