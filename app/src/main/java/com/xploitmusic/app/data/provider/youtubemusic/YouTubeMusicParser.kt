@@ -58,6 +58,26 @@ internal class YouTubeMusicParser {
             .toList()
             .deduplicated()
 
+    fun parseSearchSuggestions(response: JsonObject): List<String> =
+        runCatching {
+            val contents = response.array("contents") ?: return emptyList()
+            val suggestions = mutableListOf<String>()
+            for (element in contents) {
+                val sectionRenderer = element.takeIf { it.isJsonObject }?.asJsonObject?.objectValue("searchSuggestionsSectionRenderer") ?: continue
+                val sectionContents = sectionRenderer.array("contents") ?: continue
+                for (item in sectionContents) {
+                    val suggestionRenderer = item.takeIf { it.isJsonObject }?.asJsonObject?.objectValue("searchSuggestionRenderer") ?: continue
+                    val suggestionObj = suggestionRenderer.objectValue("suggestion") ?: continue
+                    val runs = suggestionObj.array("runs") ?: continue
+                    val text = runs.mapNotNull { it.takeIf { elem -> elem.isJsonObject }?.asJsonObject?.string("text") }.joinToString("")
+                    if (text.isNotBlank()) {
+                        suggestions.add(text)
+                    }
+                }
+            }
+            suggestions
+        }.getOrDefault(emptyList())
+
     fun parseChartSongs(response: JsonObject): List<Song> =
         response.objectsNamed(RESPONSIVE_ITEM)
             .mapNotNull { parseResponsiveItem(it, officialAudioOnly = false) }

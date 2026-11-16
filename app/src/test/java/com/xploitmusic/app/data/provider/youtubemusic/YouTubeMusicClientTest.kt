@@ -199,4 +199,64 @@ class YouTubeMusicClientTest {
         assertThat(related).hasSize(5)
         assertThat(related.map { it.id }).containsExactly("song_1", "song_2", "song_3", "song_4", "song_5").inOrder()
     }
+
+    @Test
+    fun `getSearchSuggestions calls get_search_suggestions endpoint and returns parsed suggestions`() {
+        kotlinx.coroutines.runBlocking {
+            var capturedEndpoint: String? = null
+            var capturedInput: String? = null
+
+            val client = YouTubeMusicClient(mockOkHttpClient { url, bodyJson ->
+                capturedEndpoint = url
+                if (bodyJson.isNotBlank()) {
+                    val json = JsonParser().parse(bodyJson).asJsonObject
+                    capturedInput = json.get("input")?.asString
+                }
+                jsonResponse("""
+                    {
+                      "contents": [
+                        {
+                          "searchSuggestionsSectionRenderer": {
+                            "contents": [
+                              {
+                                "searchSuggestionRenderer": {
+                                  "suggestion": {
+                                    "runs": [{"text": "cumbia"}, {"text": " sanjuanera"}]
+                                  }
+                                }
+                              }
+                            ]
+                          }
+                        }
+                      ]
+                    }
+                """)
+            })
+
+            val suggestions = client.getSearchSuggestions("cumbia", "PE")
+
+            assertThat(capturedEndpoint).contains("music/get_search_suggestions")
+            assertThat(capturedInput).isEqualTo("cumbia")
+            assertThat(suggestions).containsExactly("cumbia sanjuanera")
+        }
+    }
+
+    @Test
+    fun `getSearchSuggestions returns empty list on network error`() {
+        kotlinx.coroutines.runBlocking {
+            val client = YouTubeMusicClient(mockOkHttpClient { _, _ ->
+                Response.Builder()
+                    .code(500)
+                    .message("Server Error")
+                    .protocol(Protocol.HTTP_1_1)
+                    .request(okhttp3.Request.Builder().url("https://music.youtube.com/youtubei/v1/music/get_search_suggestions?alt=json").build())
+                    .body("Internal Server Error".toResponseBody("text/plain".toMediaType()))
+                    .build()
+            })
+
+            val suggestions = client.getSearchSuggestions("error query")
+
+            assertThat(suggestions).isEmpty()
+        }
+    }
 }

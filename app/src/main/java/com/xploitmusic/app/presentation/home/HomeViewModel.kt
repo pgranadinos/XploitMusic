@@ -35,6 +35,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.isActive
 import javax.inject.Inject
 
 import kotlinx.coroutines.flow.update
@@ -46,7 +47,8 @@ class HomeViewModel @Inject constructor(
     private val favoritesRepository: FavoritesRepository,
     private val streamRepository: StreamRepository,
     private val searchHistoryRepository: SearchHistoryRepository,
-    private val playHistoryRepository: PlayHistoryRepository
+    private val playHistoryRepository: PlayHistoryRepository,
+    private val youTubeMusicClient: com.xploitmusic.app.data.provider.youtubemusic.YouTubeMusicClient
 ) : ViewModel() {
 
     companion object {
@@ -58,6 +60,7 @@ class HomeViewModel @Inject constructor(
     private var suggestionsJob: Job? = null
     private var latamChartsJob: Job? = null
     private var recommendationsJob: Job? = null
+    private var lastSubmittedQuery: String? = null
 
     // Search query
     private val _searchQuery = MutableStateFlow("")
@@ -119,10 +122,12 @@ class HomeViewModel @Inject constructor(
         // Faster debounce for suggestions (autocomplete dropdown)
         viewModelScope.launch {
             _searchQuery
-                .debounce(100)
+                .debounce(250)
                 .distinctUntilChanged()
                 .collect { query ->
-                    if (query.length >= 2) {
+                    if (query == lastSubmittedQuery) {
+                        _suggestions.value = emptyList()
+                    } else if (query.length >= 2) {
                         loadSuggestions(query)
                     } else {
                         _suggestions.value = emptyList()
@@ -144,6 +149,9 @@ class HomeViewModel @Inject constructor(
     fun processAction(action: SearchAction) {
         when (action) {
             is SearchAction.UpdateQuery -> {
+                if (action.query != lastSubmittedQuery) {
+                    lastSubmittedQuery = null
+                }
                 _searchQuery.value = action.query
                 if (action.query.isEmpty()) {
                     _searchUiState.value = SearchState.Idle
@@ -151,6 +159,8 @@ class HomeViewModel @Inject constructor(
                 }
             }
             is SearchAction.SelectSuggestion -> {
+                lastSubmittedQuery = action.query
+                suggestionsJob?.cancel()
                 _searchQuery.value = action.query
                 _suggestions.value = emptyList()
                 manualSearchTrigger.tryEmit(action.query)
@@ -185,6 +195,8 @@ class HomeViewModel @Inject constructor(
 
     /** Called when user taps a recent search chip — relaunches the search */
     fun onRecentSearchClick(query: String) {
+        lastSubmittedQuery = query
+        suggestionsJob?.cancel()
         _searchQuery.value = query
         _suggestions.value = emptyList()
         manualSearchTrigger.tryEmit(query)
@@ -206,6 +218,8 @@ class HomeViewModel @Inject constructor(
                 merged.addAll(
                     historyMatches.take(3).map { SearchSuggestion.HistoryItem(it) }
                 )
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.w(TAG, "HomeVM: History suggestions failed: ${e.message}")
             }
@@ -229,7 +243,26 @@ class HomeViewModel @Inject constructor(
             }
             */
 
-            _suggestions.value = merged
+            // Source 2: YouTube Music suggestions (remote, max 5, case-insensitive dedup vs history)
+            try {
+                val remoteSuggestions = youTubeMusicClient.getSearchSuggestions(query)
+                val historyQueries = merged
+                    .filterIsInstance<SearchSuggestion.HistoryItem>()
+                    .map { it.entry.query.lowercase(java.util.Locale.ROOT) }
+                    .toSet()
+                val filtered = remoteSuggestions
+                    .filter { it.lowercase(java.util.Locale.ROOT) !in historyQueries }
+                    .take(5)
+                merged.addAll(filtered.map { SearchSuggestion.AutocompleteItem(it) })
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "HomeVM: YouTube Music suggestions failed: ${e.message}")
+            }
+
+            if (isActive && query != lastSubmittedQuery) {
+                _suggestions.value = merged
+            }
         }
     }
 

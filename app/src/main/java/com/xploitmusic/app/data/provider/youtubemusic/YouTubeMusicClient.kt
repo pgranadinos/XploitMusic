@@ -5,6 +5,7 @@ import com.xploitmusic.app.domain.model.CountryChart
 import com.xploitmusic.app.domain.model.LatamCountry
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -98,6 +99,19 @@ class YouTubeMusicClient @Inject constructor(
             })
         }
         return parser.parseWatchQueue(post("next", body, DEFAULT_REGION))
+    }
+
+    suspend fun getSearchSuggestions(query: String, region: String = "PE"): List<String> {
+        val body = JsonObject().apply {
+            addProperty("input", query)
+        }
+        val response = try {
+            post("music/get_search_suggestions", body, region)
+        } catch (e: Exception) {
+            Log.w("YouTubeMusicClient", "getSearchSuggestions falló para query='$query': ${e.message}")
+            return emptyList()
+        }
+        return parser.parseSearchSuggestions(response)
     }
 
     private suspend fun post(endpoint: String, body: JsonObject, region: String): JsonObject =

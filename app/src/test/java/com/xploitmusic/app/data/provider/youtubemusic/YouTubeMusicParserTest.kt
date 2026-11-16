@@ -154,6 +154,59 @@ class YouTubeMusicParserTest {
         assertThat(entries.single().song.id).isEqualTo("chart")
     }
 
+    @Test
+    fun `parseSearchSuggestions parses normal response joining runs`() {
+        val response = json("""
+            {
+              "contents": [
+                {
+                  "searchSuggestionsSectionRenderer": {
+                    "contents": [
+                      {
+                        "searchSuggestionRenderer": {
+                          "suggestion": {
+                            "runs": [
+                              {"text": "bad "},
+                              {"text": "bunny"}
+                            ]
+                          }
+                        }
+                      },
+                      {
+                        "searchSuggestionRenderer": {
+                          "suggestion": {
+                            "runs": [
+                              {"text": "bad bunny dákiti"}
+                            ]
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+        """)
+
+        val suggestions = parser.parseSearchSuggestions(response)
+
+        assertThat(suggestions).containsExactly("bad bunny", "bad bunny dákiti").inOrder()
+    }
+
+    @Test
+    fun `parseSearchSuggestions returns empty list on empty contents`() {
+        val response = json("""{"contents": []}""")
+        val suggestions = parser.parseSearchSuggestions(response)
+        assertThat(suggestions).isEmpty()
+    }
+
+    @Test
+    fun `parseSearchSuggestions returns empty list on unexpected structure`() {
+        val response = json("""{"unexpected": "structure", "contents": [{"otherRenderer": {}}]}""")
+        val suggestions = parser.parseSearchSuggestions(response)
+        assertThat(suggestions).isEmpty()
+    }
+
     private fun chartCard(title: String, browseId: String) = """
         {"musicTwoRowItemRenderer": {
             "title": {"runs": [{"text": "$title"}]},
