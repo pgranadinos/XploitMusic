@@ -13,7 +13,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ErrorOutline
-import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SearchOff
@@ -22,11 +21,15 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -50,14 +53,24 @@ fun SearchScreen(
     val searchQuery by viewModel.searchQuery.collectAsState()
     val searchState by viewModel.searchUiState.collectAsState()
     val suggestions by viewModel.suggestions.collectAsState()
+    val recentStrings by viewModel.recentSearchStrings.collectAsState()
     val keyboardController = LocalSoftwareKeyboardController.current
+
+    var dropdownVisible by remember { mutableStateOf(false) }
+
+    val recentQueries = recentStrings
+        .distinctBy { it.trim().lowercase() }
+        .take(10)
+
     val submitSearch = {
         val normalizedQuery = searchQuery.trim()
         if (normalizedQuery.isNotEmpty()) {
             viewModel.onSuggestionSelected(normalizedQuery)
         }
         keyboardController?.hide()
+        dropdownVisible = false
     }
+
     val backgroundBrush = Brush.verticalGradient(
         colors = listOf(
             MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
@@ -84,69 +97,78 @@ fun SearchScreen(
             modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 12.dp)
         )
 
-        TextField(
-            value = searchQuery,
-            onValueChange = { viewModel.onSearchQueryChange(it) },
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            placeholder = { Text("¿Qué quieres escuchar?") },
-            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-            trailingIcon = {
-                if (searchQuery.isNotEmpty()) {
-                    IconButton(onClick = { viewModel.onSearchQueryChange("") }) {
-                        Icon(Icons.Default.Close, contentDescription = "Limpiar búsqueda")
+        // Search field — fixed at top, 56 dp height
+        Box(modifier = Modifier.padding(horizontal = 16.dp)) {
+            TextField(
+                value = searchQuery,
+                onValueChange = { viewModel.onSearchQueryChange(it) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp)
+                    .onFocusChanged { focusState ->
+                        dropdownVisible = focusState.isFocused
+                    },
+                placeholder = { Text("¿Qué quieres escuchar?") },
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                trailingIcon = {
+                    if (searchQuery.isNotEmpty()) {
+                        IconButton(onClick = {
+                            viewModel.onSearchQueryChange("")
+                            dropdownVisible = true
+                        }) {
+                            Icon(Icons.Default.Close, contentDescription = "Limpiar búsqueda")
+                        }
                     }
-                }
-            },
-            singleLine = true,
-            shape = MaterialTheme.shapes.medium,
-            colors = TextFieldDefaults.colors(
-                focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-                unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.82f),
-                focusedIndicatorColor = Color.Transparent,
-                unfocusedIndicatorColor = Color.Transparent,
-                cursorColor = MaterialTheme.colorScheme.primary
-            ),
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-            keyboardActions = KeyboardActions(
-                onSearch = { submitSearch() }
+                },
+                singleLine = true,
+                shape = MaterialTheme.shapes.medium,
+                colors = TextFieldDefaults.colors(
+                    focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.82f),
+                    focusedIndicatorColor = Color.Transparent,
+                    unfocusedIndicatorColor = Color.Transparent,
+                    cursorColor = MaterialTheme.colorScheme.primary
+                ),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(
+                    onSearch = { submitSearch() }
+                )
             )
-        )
 
-        val recentStrings by viewModel.recentSearchStrings.collectAsState()
-        val recentQueries = recentStrings
-            .distinctBy { it.trim().lowercase() }
-            .take(10)
+            // Dropdown overlaid below the TextField
+            SearchDropdown(
+                query = searchQuery,
+                recents = recentQueries,
+                suggestions = suggestions,
+                onRecentClick = { query ->
+                    viewModel.onRecentSearchClick(query)
+                    keyboardController?.hide()
+                    dropdownVisible = false
+                },
+                onDeleteRecent = { query ->
+                    viewModel.processAction(SearchAction.DeleteHistory(query))
+                },
+                onClearAll = {
+                    viewModel.processAction(SearchAction.ClearHistory)
+                },
+                onSuggestionClick = { text ->
+                    viewModel.onSuggestionSelected(text)
+                    keyboardController?.hide()
+                    dropdownVisible = false
+                },
+                visible = dropdownVisible,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 60.dp) // below the 56 dp field + 4 dp gap
+            )
+        }
 
+        // Body: results / explore (chips removed per P3)
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(bottom = 24.dp)
         ) {
             if (searchQuery.isEmpty()) {
-                // ── Recent Searches Chips ──
-                if (recentQueries.isNotEmpty()) {
-                    item {
-                        SearchSectionHeader(
-                            title = "Búsquedas recientes",
-                            subtitle = "Continúa donde lo dejaste",
-                            actionLabel = "Borrar",
-                            onAction = {
-                                viewModel.processAction(SearchAction.ClearHistory)
-                            }
-                        )
-                    }
-                    item {
-                        RecentSearchChips(
-                            queries = recentQueries,
-                            onChipClick = { query ->
-                                viewModel.onRecentSearchClick(query)
-                                keyboardController?.hide()
-                            }
-                        )
-                    }
-                }
-
                 item {
                     SearchSectionHeader(
                         title = "Explorar",
@@ -160,13 +182,6 @@ fun SearchScreen(
                             keyboardController?.hide()
                         }
                     )
-                }
-            } else if (suggestions.isNotEmpty()) {
-                items(suggestions) { suggestion ->
-                    SearchSuggestionItem(suggestion) {
-                        viewModel.onSuggestionSelected(it)
-                        keyboardController?.hide()
-                    }
                 }
             } else {
                 when (val state = searchState) {
@@ -217,44 +232,6 @@ fun SearchScreen(
         }
     }
 }
-@Composable
-private fun SearchSuggestionItem(
-    suggestion: SearchSuggestion,
-    onClick: (String) -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { 
-                when(suggestion) {
-                    is SearchSuggestion.AutocompleteItem -> onClick(suggestion.text)
-                    is SearchSuggestion.HistoryItem -> onClick(suggestion.entry.displayQuery)
-                }
-            }
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Icon(
-            imageVector = when (suggestion) {
-                is SearchSuggestion.AutocompleteItem -> Icons.Default.Search
-                is SearchSuggestion.HistoryItem -> Icons.Default.History
-            },
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier
-                .padding(end = 16.dp)
-                .size(20.dp)
-        )
-        Text(
-            text = when(suggestion) {
-                is SearchSuggestion.AutocompleteItem -> suggestion.text
-                is SearchSuggestion.HistoryItem -> suggestion.entry.displayQuery
-            },
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurface
-        )
-    }
-}
 
 private fun LazyListScope.renderSearchResults(
     songs: List<Song>,
@@ -277,7 +254,7 @@ private fun LazyListScope.renderSearchResults(
             )
         }
     }
-    
+
     if (channels.isNotEmpty()) {
         item {
             SearchSectionHeader(
@@ -496,51 +473,6 @@ private fun SearchMessageCard(
                     Text(actionLabel)
                 }
             }
-        }
-    }
-}
-
-/**
- * Horizontal scrollable row of recent search chips.
- * Uses SuggestionChip for a modern, dark-theme-friendly look.
- */
-@Composable
-private fun RecentSearchChips(
-    queries: List<String>,
-    onChipClick: (String) -> Unit
-) {
-    androidx.compose.foundation.lazy.LazyRow(
-        contentPadding = PaddingValues(horizontal = 16.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        items(queries) { query ->
-            SuggestionChip(
-                onClick = { onChipClick(query) },
-                label = {
-                    Text(
-                        text = query,
-                        style = MaterialTheme.typography.labelLarge,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                },
-                icon = {
-                    Icon(
-                        Icons.Default.History,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
-                    )
-                },
-                shape = MaterialTheme.shapes.large,
-                colors = SuggestionChipDefaults.suggestionChipColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-                    labelColor = MaterialTheme.colorScheme.onSurface
-                ),
-                border = SuggestionChipDefaults.suggestionChipBorder(
-                    enabled = true,
-                    borderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
-                )
-            )
         }
     }
 }
