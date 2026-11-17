@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.xploitmusic.app.R
 import com.xploitmusic.app.domain.model.Song
+import com.xploitmusic.app.presentation.components.ScreenHeader
 import com.xploitmusic.app.presentation.components.XploitAlbumCard
 import com.xploitmusic.app.presentation.components.XploitQuickPickCard
 
@@ -57,23 +58,23 @@ fun HomeScreen(
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
-            TopAppBar(
+            ScreenHeader(
                 title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Image(
-                            painter = painterResource(R.drawable.xploitmusic_brand_icon),
-                            contentDescription = "Icono de XploitMusic",
-                            modifier = Modifier
-                                .size(36.dp)
-                                .clip(MaterialTheme.shapes.small)
-                        )
-                        Spacer(Modifier.width(10.dp))
-                        Text(
-                            "XploitMusic",
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.ExtraBold
-                        )
-                    }
+                    Text(
+                        "XploitMusic",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = MaterialTheme.colorScheme.onBackground
+                    )
+                },
+                leading = {
+                    Image(
+                        painter = painterResource(R.drawable.xploitmusic_brand_icon),
+                        contentDescription = "Icono de XploitMusic",
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(MaterialTheme.shapes.small)
+                    )
                 },
                 actions = {
                     IconButton(
@@ -102,12 +103,7 @@ fun HomeScreen(
                             tint = MaterialTheme.colorScheme.primary
                         )
                     }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background.copy(alpha = 0.96f),
-                    titleContentColor = MaterialTheme.colorScheme.onBackground,
-                    actionIconContentColor = MaterialTheme.colorScheme.onBackground
-                )
+                }
             )
         }
     ) { paddingValues ->

@@ -38,6 +38,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.xploitmusic.app.presentation.components.ScreenHeader
 import coil.compose.AsyncImage
 import com.xploitmusic.app.domain.model.SearchResultItem
 import com.xploitmusic.app.domain.model.Song
@@ -83,18 +84,9 @@ fun SearchScreen(
             .fillMaxSize()
             .background(backgroundBrush)
     ) {
-        Text(
-            text = "Buscar",
-            style = MaterialTheme.typography.headlineMedium,
-            fontWeight = FontWeight.ExtraBold,
-            modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 20.dp),
-            color = MaterialTheme.colorScheme.onBackground
-        )
-        Text(
-            text = "Canciones, artistas y playlists",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 12.dp)
+        ScreenHeader(
+            title = "Buscar",
+            subtitle = "Canciones, artistas y playlists"
         )
 
         // Search field — fixed at top, 56 dp height

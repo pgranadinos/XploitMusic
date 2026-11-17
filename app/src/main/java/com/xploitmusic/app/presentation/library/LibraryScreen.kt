@@ -31,6 +31,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
 import com.xploitmusic.app.data.local.entity.PlaylistWithSongs
 import com.xploitmusic.app.domain.model.Song
+import com.xploitmusic.app.presentation.components.ScreenHeader
 import com.xploitmusic.app.presentation.components.SongListItem
 import org.burnoutcrew.reorderable.*
 
@@ -110,21 +111,9 @@ fun LibraryScreen(
     Scaffold(
         topBar = {
             if (selectedPlaylist == null) {
-                TopAppBar(
-                    title = { 
-                        Column {
-                            Text(
-                                "Biblioteca",
-                                style = MaterialTheme.typography.titleLarge,
-                                fontWeight = FontWeight.ExtraBold
-                            )
-                            Text(
-                                "Tu música y tus colecciones",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    },
+                ScreenHeader(
+                    title = "Biblioteca",
+                    subtitle = "Tu música y tus colecciones",
                     actions = {
                         IconButton(
                             onClick = onNavigateToSettings,
@@ -167,12 +156,7 @@ fun LibraryScreen(
                                 )
                             }
                         }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.background,
-                        titleContentColor = MaterialTheme.colorScheme.onBackground,
-                        actionIconContentColor = MaterialTheme.colorScheme.onBackground
-                    )
+                    }
                 )
             }
         }
