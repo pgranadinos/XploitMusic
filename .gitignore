@@ -16,6 +16,8 @@ fatal_crash.txt
 kapt_error.txt
 error_body.json
 *_debug.png
+test_*.txt
+.artifacts/
 
 # Secretos
 *.jks
