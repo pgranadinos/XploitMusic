@@ -29,6 +29,9 @@ interface PlaylistDao {
     @Query("SELECT * FROM playlists ORDER BY createdAt DESC")
     fun getAllPlaylists(): Flow<List<PlaylistEntity>>
 
+    @Query("SELECT * FROM playlists WHERE playlistId = :playlistId")
+    fun getPlaylistById(playlistId: Long): Flow<PlaylistEntity?>
+
     @Query("SELECT playlistId FROM playlists WHERE source = :source AND sourceId = :sourceId LIMIT 1")
     suspend fun findPlaylistIdBySource(source: String, sourceId: String): Long?
 

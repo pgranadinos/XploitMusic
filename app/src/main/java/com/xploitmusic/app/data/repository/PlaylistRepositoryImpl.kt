@@ -9,6 +9,7 @@ import com.xploitmusic.app.data.local.entity.SongEntity
 import com.xploitmusic.app.domain.model.Song
 import com.xploitmusic.app.domain.repository.PlaylistRepository
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -25,7 +26,9 @@ class PlaylistRepositoryImpl @Inject constructor(
         playlistDao.getAllPlaylistsWithSongs()
 
     override fun getPlaylistWithSongs(playlistId: Long): Flow<PlaylistWithSongs?> =
-        playlistDao.getPlaylistWithSongs(playlistId)
+        playlistDao.getPlaylistById(playlistId).combine(playlistDao.getPlaylistSongsOrdered(playlistId)) { playlist, songs ->
+            if (playlist == null) null else PlaylistWithSongs(playlist = playlist, songs = songs)
+        }
 
     override suspend fun createPlaylist(name: String, source: String?, sourceId: String?): Long {
         return playlistDao.createPlaylist(

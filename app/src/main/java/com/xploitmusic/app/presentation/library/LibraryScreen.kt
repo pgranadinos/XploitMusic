@@ -7,6 +7,9 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -31,6 +34,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
 import com.xploitmusic.app.data.local.entity.PlaylistWithSongs
 import com.xploitmusic.app.domain.model.Song
+import com.xploitmusic.app.presentation.components.PlaylistCard
 import com.xploitmusic.app.presentation.components.ScreenHeader
 import com.xploitmusic.app.presentation.components.SongListItem
 import org.burnoutcrew.reorderable.*
@@ -52,6 +56,7 @@ fun LibraryScreen(
     onNavigateToDownloads: () -> Unit = {},
     onNavigateToLocal: () -> Unit = {},
     onNavigateToSettings: () -> Unit = {},
+    onNavigateToSearch: () -> Unit = {},
     viewModel: LibraryViewModel = hiltViewModel()
 ) {
     val allPlaylistsWithSongs by viewModel.allPlaylistsWithSongs.collectAsState()
@@ -172,30 +177,35 @@ fun LibraryScreen(
                     pws = selectedPlaylist!!,
                     onBack = { viewModel.clearSelection() },
                     onSongClick = { song, list -> onSongClick(song, list) },
-                    onReorder = { from, to -> 
-                        viewModel.reorderPlaylist(selectedPlaylist!!.playlist.playlistId, from, to)
-                    }
+                    onReorder = { from, to -> viewModel.reorderPlaylist(selectedPlaylist!!.playlist.playlistId, from, to) }
                 )
             } else {
                 Column(modifier = Modifier.fillMaxSize()) {
+                    // Filter Chips Bar
                     LazyRow(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(bottom = 16.dp, top = 8.dp),
+                            .padding(vertical = 8.dp),
                         contentPadding = PaddingValues(horizontal = 16.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        items(LibraryTab.values()) { tab ->
+                        items(LibraryTab.entries.toTypedArray()) { tab ->
+                            val label = when (tab) {
+                                LibraryTab.PLAYLISTS -> "Playlists · ${allPlaylistsWithSongs.size}"
+                                LibraryTab.FAVORITES -> "Favoritos · ${favorites.size}"
+                                LibraryTab.RECENTS   -> "Recientes · ${if (recents.size >= 20) "20+" else recents.size.toString()}"
+                                else -> tab.label
+                            }
                             FilterChip(
                                 selected = selectedTab == tab,
                                 onClick = {
                                     when (tab) {
                                         LibraryTab.DOWNLOADS -> onNavigateToDownloads()
-                                        LibraryTab.LOCAL -> onNavigateToLocal()
+                                        LibraryTab.LOCAL     -> onNavigateToLocal()
                                         else -> selectedTab = tab
                                     }
                                 },
-                                label = { Text(tab.label) },
+                                label = { Text(label) },
                                 leadingIcon = {
                                     val icon = when (tab) {
                                         LibraryTab.PLAYLISTS -> Icons.AutoMirrored.Filled.QueueMusic
@@ -220,26 +230,26 @@ fun LibraryScreen(
                         }
                     }
 
-                    LazyColumn(
-                        state = if (selectedTab == LibraryTab.FAVORITES) favReorderState.listState else plainListState,
-                        modifier = if (selectedTab == LibraryTab.FAVORITES) Modifier.fillMaxSize().reorderable(favReorderState) else Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(bottom = 24.dp)
-                    ) {
-                        when (selectedTab) {
-                            LibraryTab.PLAYLISTS -> {
-                                if (allPlaylistsWithSongs.isEmpty()) {
-                                    item {
-                                        EmptyState(
-                                            icon = Icons.AutoMirrored.Filled.QueueMusic,
-                                            title = "Sin playlists",
-                                            subtitle = "Crea una colección para guardar tus canciones",
-                                            actionLabel = "Crear playlist",
-                                            onAction = { viewModel.showCreatePlaylistDialog() }
-                                        )
-                                    }
-                                } else {
+                    when (selectedTab) {
+                        LibraryTab.PLAYLISTS -> {
+                            if (allPlaylistsWithSongs.isEmpty()) {
+                                EmptyState(
+                                    icon = Icons.AutoMirrored.Filled.QueueMusic,
+                                    title = "Sin playlists",
+                                    subtitle = "Crea una colección para guardar tus canciones",
+                                    actionLabel = "Crear playlist",
+                                    onAction = { viewModel.showCreatePlaylistDialog() }
+                                )
+                            } else {
+                                LazyVerticalGrid(
+                                    columns = GridCells.Fixed(2),
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 24.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                                ) {
                                     items(allPlaylistsWithSongs, key = { it.playlist.playlistId }) { pws ->
-                                        PlaylistItem(
+                                        PlaylistCard(
                                             pws = pws,
                                             onClick = { viewModel.selectPlaylist(pws.playlist.playlistId) },
                                             onDelete = { playlistPendingDeletion = pws },
@@ -248,43 +258,85 @@ fun LibraryScreen(
                                     }
                                 }
                             }
-                            LibraryTab.FAVORITES -> {
-                                if (favorites.isEmpty()) {
-                                    item { EmptyState(Icons.Default.FavoriteBorder, "Sin favoritos", "Toca el corazón en el reproductor") }
-                                } else {
-                                    items(favorites, key = { it.id }) { song ->
-                                        ReorderableItem(favReorderState, key = song.id) { isDragging ->
-                                            Box(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .padding(horizontal = 8.dp, vertical = 2.dp)
-                                                    .clip(MaterialTheme.shapes.medium)
-                                                    .detectReorderAfterLongPress(favReorderState)
-                                                    .background(
-                                                        if (isDragging) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
-                                                        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f)
-                                                    )
-                                            ) {
-                                                SongListItem(song, { onSongClick(song, favorites) })
+                        }
+                        LibraryTab.FAVORITES -> {
+                            if (favorites.isEmpty()) {
+                                EmptyState(
+                                    icon = Icons.Default.FavoriteBorder,
+                                    title = "Sin favoritos",
+                                    subtitle = "Toca el corazón en el reproductor",
+                                    actionLabel = "Explorar canciones",
+                                    onAction = onNavigateToSearch
+                                )
+                            } else {
+                                Column(modifier = Modifier.fillMaxSize()) {
+                                    PlayShuffleActionBar(songs = favorites, onSongClick = onSongClick)
+                                    LazyColumn(
+                                        state = favReorderState.listState,
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .reorderable(favReorderState),
+                                        contentPadding = PaddingValues(bottom = 24.dp)
+                                    ) {
+                                        items(favorites, key = { it.id }) { song ->
+                                            ReorderableItem(favReorderState, key = song.id) { isDragging ->
+                                                Box(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .padding(horizontal = 8.dp, vertical = 2.dp)
+                                                        .clip(MaterialTheme.shapes.medium)
+                                                        .detectReorderAfterLongPress(favReorderState)
+                                                        .background(
+                                                            if (isDragging) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+                                                            else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f)
+                                                        )
+                                                ) {
+                                                    SongListItem(song, { onSongClick(song, favorites) })
+                                                }
                                             }
                                         }
                                     }
                                 }
                             }
-                            LibraryTab.RECENTS -> {
-                                if (recents.isEmpty()) {
-                                    item { EmptyState(Icons.Default.History, "Sin historial", "Tus canciones aparecerán aquí") }
-                                } else {
-                                    items(recents) { song ->
-                                        SongListItem(song, { onSongClick(song, recents) }, Modifier.padding(horizontal = 8.dp))
+                        }
+                        LibraryTab.RECENTS -> {
+                            if (recents.isEmpty()) {
+                                EmptyState(
+                                    icon = Icons.Default.History,
+                                    title = "Sin historial",
+                                    subtitle = "Tus canciones aparecerán aquí",
+                                    actionLabel = "Ir a Buscar",
+                                    onAction = onNavigateToSearch
+                                )
+                            } else {
+                                Column(modifier = Modifier.fillMaxSize()) {
+                                    PlayShuffleActionBar(songs = recents, onSongClick = onSongClick)
+                                    LazyColumn(
+                                        state = plainListState,
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentPadding = PaddingValues(bottom = 24.dp)
+                                    ) {
+                                        items(recents) { song ->
+                                            SongListItem(song, { onSongClick(song, recents) }, Modifier.padding(horizontal = 8.dp))
+                                        }
                                     }
                                 }
                             }
-                            LibraryTab.DOWNLOADS, LibraryTab.LOCAL -> Unit
-                            LibraryTab.TOP -> {
-                                if (mostPlayed.isEmpty()) {
-                                    item { EmptyState(Icons.AutoMirrored.Filled.TrendingUp, "Sin datos", "Escucha música para ver tu top") }
-                                } else {
+                        }
+                        LibraryTab.DOWNLOADS, LibraryTab.LOCAL -> Unit
+                        LibraryTab.TOP -> {
+                            if (mostPlayed.isEmpty()) {
+                                EmptyState(
+                                    icon = Icons.AutoMirrored.Filled.TrendingUp,
+                                    title = "Sin datos",
+                                    subtitle = "Escucha música para ver tu top"
+                                )
+                            } else {
+                                LazyColumn(
+                                    state = plainListState,
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentPadding = PaddingValues(bottom = 24.dp)
+                                ) {
                                     itemsIndexed(mostPlayed) { index, song ->
                                         TopSongItem(index + 1, song, { onSongClick(song, mostPlayed) })
                                     }
@@ -298,6 +350,45 @@ fun LibraryScreen(
     }
 }
 
+@Composable
+private fun PlayShuffleActionBar(
+    songs: List<Song>,
+    onSongClick: (Song, List<Song>) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    if (songs.isEmpty()) return
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        FilledTonalButton(
+            onClick = { onSongClick(songs.first(), songs) },
+            modifier = Modifier.weight(1f)
+        ) {
+            Icon(Icons.Default.PlayArrow, contentDescription = null)
+            Spacer(Modifier.width(6.dp))
+            Text("Reproducir")
+        }
+        FilledTonalButton(
+            onClick = {
+                val shuffled = songs.shuffled()
+                if (shuffled.isNotEmpty()) {
+                    onSongClick(shuffled.first(), shuffled)
+                }
+            },
+            modifier = Modifier.weight(1f)
+        ) {
+            Icon(Icons.Default.Shuffle, contentDescription = null)
+            Spacer(Modifier.width(6.dp))
+            Text("Mezclar")
+        }
+    }
+}
+
+private const val DETAIL_HEADER_ITEMS = 1 // Counts the long-press instructions header text item in LazyColumn
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun PlaylistDetailView(
@@ -310,8 +401,8 @@ private fun PlaylistDetailView(
         Song(entity.id, entity.title, entity.artist, entity.thumbnailUrl, entity.durationSeconds, entity.streamUrl)
     }
     val state = rememberReorderableLazyListState(onMove = { from, to ->
-        val fromSongIndex = from.index - 1
-        val toSongIndex = to.index - 1
+        val fromSongIndex = from.index - DETAIL_HEADER_ITEMS
+        val toSongIndex = to.index - DETAIL_HEADER_ITEMS
         if (fromSongIndex in songs.indices && toSongIndex in songs.indices) {
             onReorder(fromSongIndex, toSongIndex)
         }
@@ -321,7 +412,11 @@ private fun PlaylistDetailView(
         TopAppBar(
             title = {
                 Column {
-                    Text(pws.playlist.name, fontWeight = FontWeight.Bold)
+                    Text(
+                        pws.playlist.name,
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold
+                    )
                     Text(
                         "${songs.size} ${if (songs.size == 1) "canción" else "canciones"}",
                         style = MaterialTheme.typography.bodySmall,
@@ -336,9 +431,14 @@ private fun PlaylistDetailView(
             },
             colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
         )
+        if (songs.isNotEmpty()) {
+            PlayShuffleActionBar(songs = songs, onSongClick = onSongClick)
+        }
         LazyColumn(
             state = state.listState,
-            modifier = Modifier.fillMaxSize().reorderable(state),
+            modifier = Modifier
+                .fillMaxSize()
+                .reorderable(state),
             contentPadding = PaddingValues(bottom = 24.dp)
         ) {
             if (songs.isEmpty()) {
@@ -425,8 +525,6 @@ private fun EmptyState(
         if (actionLabel != null && onAction != null) {
             Spacer(Modifier.height(20.dp))
             Button(onClick = onAction) {
-                Icon(Icons.Default.Add, contentDescription = null)
-                Spacer(Modifier.width(8.dp))
                 Text(actionLabel)
             }
         }
@@ -434,65 +532,61 @@ private fun EmptyState(
 }
 
 @Composable
-private fun PlaylistItem(pws: PlaylistWithSongs, onClick: () -> Unit, onDelete: () -> Unit, onRename: () -> Unit) {
-    var showMenu by remember { mutableStateOf(false) }
-    val coverUrl = pws.playlist.coverUrl?.takeIf { it.isNotBlank() }
-        ?: pws.songs.firstOrNull()?.thumbnailUrl?.takeIf { it.isNotBlank() }
-    Card(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp).clickable(onClick = onClick),
-        shape = MaterialTheme.shapes.medium,
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f)
-        ),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
-    ) {
-        Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                Modifier
-                    .size(56.dp)
-                    .clip(MaterialTheme.shapes.small)
-                    .background(
-                        MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
-                        MaterialTheme.shapes.small
-                    ),
-                Alignment.Center
-            ) {
-                if (coverUrl != null) {
-                    AsyncImage(
-                        model = coverUrl,
-                        contentDescription = "Carátula de ${pws.playlist.name}",
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                } else {
-                    Icon(
-                        Icons.AutoMirrored.Filled.QueueMusic,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                }
+private fun CreatePlaylistDialog(onDismiss: () -> Unit, onCreate: (String) -> Unit) {
+    var name by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Nueva playlist") },
+        text = {
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it },
+                label = { Text("Nombre") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+        },
+        confirmButton = {
+            Button(onClick = { onCreate(name.trim()) }, enabled = name.isNotBlank()) {
+                Text("Crear")
             }
-            Spacer(Modifier.width(16.dp))
-            Column(Modifier.weight(1f)) {
-                Text(pws.playlist.name, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
-                Text("${pws.songs.size} canciones", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } }
+    )
+}
+
+
+
+@Composable
+private fun DeletePlaylistDialog(
+    playlistName: String,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = {
+            Icon(
+                Icons.Default.DeleteOutline,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.error
+            )
+        },
+        title = { Text("Eliminar playlist") },
+        text = {
+            Text("¿Quieres eliminar \"$playlistName\"? Las canciones no se borrarán del dispositivo.")
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text("Eliminar", color = MaterialTheme.colorScheme.error)
             }
-            Box {
-                IconButton(onClick = { showMenu = true }) {
-                    Icon(Icons.Default.MoreVert, "Opciones de ${pws.playlist.name}",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
-                    DropdownMenuItem(text = { Text("Cambiar nombre") },
-                        leadingIcon = { Icon(Icons.Default.Edit, null) },
-                        onClick = { showMenu = false; onRename() })
-                    DropdownMenuItem(text = { Text("Eliminar") },
-                        leadingIcon = { Icon(Icons.Default.Delete, null) },
-                        onClick = { showMenu = false; onDelete() })
-                }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancelar")
             }
         }
-    }
+    )
 }
 
 @Composable
@@ -541,59 +635,4 @@ private fun TopSongItem(rank: Int, song: Song, onClick: () -> Unit) {
             Text(song.artist, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
-}
-
-@Composable
-private fun CreatePlaylistDialog(onDismiss: () -> Unit, onCreate: (String) -> Unit) {
-    var name by remember { mutableStateOf("") }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Nueva playlist") },
-        text = {
-            OutlinedTextField(
-                value = name,
-                onValueChange = { name = it },
-                label = { Text("Nombre") },
-                singleLine = true
-            )
-        },
-        confirmButton = {
-            Button(onClick = { onCreate(name.trim()) }, enabled = name.isNotBlank()) {
-                Text("Crear")
-            }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } }
-    )
-}
-
-@Composable
-private fun DeletePlaylistDialog(
-    playlistName: String,
-    onDismiss: () -> Unit,
-    onConfirm: () -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        icon = {
-            Icon(
-                Icons.Default.DeleteOutline,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.error
-            )
-        },
-        title = { Text("Eliminar playlist") },
-        text = {
-            Text("¿Quieres eliminar \"$playlistName\"? Las canciones no se borrarán del dispositivo.")
-        },
-        confirmButton = {
-            TextButton(onClick = onConfirm) {
-                Text("Eliminar", color = MaterialTheme.colorScheme.error)
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancelar")
-            }
-        }
-    )
 }

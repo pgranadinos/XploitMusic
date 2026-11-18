@@ -263,6 +263,9 @@ fun XploitAppNavigation(
                     },
                     onNavigateToSettings = {
                         navController.navigate("settings")
+                    },
+                    onNavigateToSearch = {
+                        navController.navigate("search") { launchSingleTop = true }
                     }
                 )
             }
