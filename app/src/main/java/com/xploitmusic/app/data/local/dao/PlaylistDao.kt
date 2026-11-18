@@ -99,4 +99,7 @@ interface PlaylistDao {
     @Transaction
     @Query("SELECT * FROM playlists ORDER BY createdAt DESC")
     fun getAllPlaylistsWithSongs(): Flow<List<PlaylistWithSongs>>
+
+    @Query("SELECT * FROM playlist_song_cross_ref ORDER BY playlistId ASC, position ASC")
+    fun getAllCrossRefsOrdered(): Flow<List<PlaylistSongCrossRef>>
 }

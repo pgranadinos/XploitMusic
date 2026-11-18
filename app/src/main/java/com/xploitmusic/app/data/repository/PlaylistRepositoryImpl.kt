@@ -23,7 +23,19 @@ class PlaylistRepositoryImpl @Inject constructor(
         playlistDao.getAllPlaylists()
 
     override fun getAllPlaylistsWithSongs(): Flow<List<PlaylistWithSongs>> =
-        playlistDao.getAllPlaylistsWithSongs()
+        playlistDao.getAllPlaylistsWithSongs().combine(playlistDao.getAllCrossRefsOrdered()) { playlists, crossRefs ->
+            val positionMap = crossRefs.groupBy { it.playlistId }
+            playlists.map { pws ->
+                val refs = positionMap[pws.playlist.playlistId]
+                if (refs.isNullOrEmpty()) {
+                    pws
+                } else {
+                    val orderMap = refs.associate { it.songId to it.position }
+                    val sortedSongs = pws.songs.sortedBy { orderMap[it.id] ?: Int.MAX_VALUE }
+                    pws.copy(songs = sortedSongs)
+                }
+            }
+        }
 
     override fun getPlaylistWithSongs(playlistId: Long): Flow<PlaylistWithSongs?> =
         playlistDao.getPlaylistById(playlistId).combine(playlistDao.getPlaylistSongsOrdered(playlistId)) { playlist, songs ->

@@ -48,4 +48,35 @@ class PlaylistReorderTest {
             db.close()
         }
     }
+
+    @Test
+    fun `moveSongInPlaylist updates song order at index 0 in getAllPlaylistsWithSongs for cover thumbnail`() = runTest {
+        val db = Room.inMemoryDatabaseBuilder(RuntimeEnvironment.getApplication(), XploitDatabase::class.java)
+            .allowMainThreadQueries().build()
+        try {
+            val dao = db.playlistDao()
+            val repo = PlaylistRepositoryImpl(dao, db.songDao())
+
+            val playlistId = dao.createPlaylist(PlaylistEntity(name = "My Playlist"))
+            for (id in listOf("s1", "s2", "s3")) {
+                db.songDao().upsertNetworkSong(SongEntity(id, "Song $id", "Artist", "http://thumb/$id", 180))
+                dao.addSongToPlaylist(PlaylistSongCrossRef(playlistId = playlistId, songId = id))
+            }
+
+            // Verify initial first song in getAllPlaylistsWithSongs is s1
+            val initialAll = repo.getAllPlaylistsWithSongs().first()
+            val initialPws = initialAll.first { it.playlist.playlistId == playlistId }
+            assertThat(initialPws.songs.first().id).isEqualTo("s1")
+
+            // Move s3 (index 2) to index 0
+            repo.moveSongInPlaylist(playlistId, fromPosition = 2, toPosition = 0)
+
+            // Verify first song in getAllPlaylistsWithSongs after move is s3
+            val allAfterMove = repo.getAllPlaylistsWithSongs().first()
+            val pwsAfterMove = allAfterMove.first { it.playlist.playlistId == playlistId }
+            assertThat(pwsAfterMove.songs.first().id).isEqualTo("s3")
+        } finally {
+            db.close()
+        }
+    }
 }
