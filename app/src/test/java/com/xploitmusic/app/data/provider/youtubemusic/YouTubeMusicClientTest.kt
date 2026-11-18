@@ -259,4 +259,18 @@ class YouTubeMusicClientTest {
             assertThat(suggestions).isEmpty()
         }
     }
+
+    @Test
+    fun `getSearchSuggestions rethrows CancellationException`() = kotlinx.coroutines.runBlocking {
+        val client = YouTubeMusicClient(mockOkHttpClient { _, _ ->
+            throw kotlinx.coroutines.CancellationException("Test cancellation")
+        })
+
+        try {
+            client.getSearchSuggestions("cancelled query")
+            org.junit.Assert.fail("Expected CancellationException to be thrown")
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            assertThat(e.message).isEqualTo("Test cancellation")
+        }
+    }
 }

@@ -6,6 +6,7 @@ import com.xploitmusic.app.domain.model.LatamCountry
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -107,6 +108,8 @@ class YouTubeMusicClient @Inject constructor(
         }
         val response = try {
             post("music/get_search_suggestions", body, region)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.w("YouTubeMusicClient", "getSearchSuggestions falló para query='$query': ${e.message}")
             return emptyList()
