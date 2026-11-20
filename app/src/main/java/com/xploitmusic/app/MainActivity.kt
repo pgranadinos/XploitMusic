@@ -28,9 +28,12 @@ import androidx.navigation.compose.rememberNavController
 import com.xploitmusic.app.core.theme.XploitMusicTheme
 import com.xploitmusic.app.presentation.components.MiniPlayerBar
 import dagger.hilt.android.AndroidEntryPoint
+import javax.inject.Inject
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+
+    @Inject lateinit var themeSettings: com.xploitmusic.app.domain.repository.ThemeSettings
 
     // Mutable state observed by Compose to trigger navigation to player
     private var _openPlayerState = mutableStateOf(false)
@@ -41,7 +44,8 @@ class MainActivity : ComponentActivity() {
         _openPlayerState.value = isPlayerIntent(intent)
         _openSpotifyImportState.value = isSpotifyImportIntent(intent)
         setContent {
-            XploitMusicTheme {
+            val themeMode by themeSettings.themeMode.collectAsState()
+            XploitMusicTheme(themeMode = themeMode) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background

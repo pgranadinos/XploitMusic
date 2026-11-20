@@ -30,13 +30,16 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalContext
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
+import com.xploitmusic.app.core.theme.AppTheme
 import com.xploitmusic.app.data.local.entity.PlaylistWithSongs
 import com.xploitmusic.app.domain.model.Song
 import com.xploitmusic.app.presentation.components.PlaylistCard
 import com.xploitmusic.app.presentation.components.ScreenHeader
 import com.xploitmusic.app.presentation.components.SongListItem
+import com.xploitmusic.app.presentation.share.ShareHelper
 import org.burnoutcrew.reorderable.*
 
 private enum class LibraryTab(val label: String) {
@@ -65,6 +68,10 @@ fun LibraryScreen(
     val favorites by viewModel.favorites.collectAsState()
     val recents by viewModel.recents.collectAsState()
     val mostPlayed by viewModel.mostPlayed.collectAsState()
+    val context = LocalContext.current
+    val onShare: (Song) -> Unit = { song ->
+        ShareHelper.shareSong(context, song)
+    }
 
     val favReorderState = rememberReorderableLazyListState(onMove = { from, to ->
         viewModel.reorderFavorites(from.index, to.index)
@@ -177,7 +184,8 @@ fun LibraryScreen(
                     pws = selectedPlaylist!!,
                     onBack = { viewModel.clearSelection() },
                     onSongClick = { song, list -> onSongClick(song, list) },
-                    onReorder = { from, to -> viewModel.reorderPlaylist(selectedPlaylist!!.playlist.playlistId, from, to) }
+                    onReorder = { from, to -> viewModel.reorderPlaylist(selectedPlaylist!!.playlist.playlistId, from, to) },
+                    onShare = onShare
                 )
             } else {
                 Column(modifier = Modifier.fillMaxSize()) {
@@ -291,7 +299,7 @@ fun LibraryScreen(
                                                             else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f)
                                                         )
                                                 ) {
-                                                    SongListItem(song, { onSongClick(song, favorites) })
+                                                    SongListItem(song, { onSongClick(song, favorites) }, onShareClick = { onShare(song) })
                                                 }
                                             }
                                         }
@@ -317,7 +325,7 @@ fun LibraryScreen(
                                         contentPadding = PaddingValues(bottom = 24.dp)
                                     ) {
                                         items(recents) { song ->
-                                            SongListItem(song, { onSongClick(song, recents) }, Modifier.padding(horizontal = 8.dp))
+                                            SongListItem(song, { onSongClick(song, recents) }, Modifier.padding(horizontal = 8.dp), onShareClick = { onShare(song) })
                                         }
                                     }
                                 }
@@ -395,7 +403,8 @@ private fun PlaylistDetailView(
     pws: PlaylistWithSongs,
     onBack: () -> Unit,
     onSongClick: (Song, List<Song>) -> Unit,
-    onReorder: (Int, Int) -> Unit
+    onReorder: (Int, Int) -> Unit,
+    onShare: (Song) -> Unit
 ) {
     val songs = pws.songs.map { entity ->
         Song(entity.id, entity.title, entity.artist, entity.thumbnailUrl, entity.durationSeconds, entity.streamUrl)
@@ -471,7 +480,7 @@ private fun PlaylistDetailView(
                                     else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f)
                                 )
                         ) {
-                            SongListItem(song, { onSongClick(song, songs) })
+                            SongListItem(song, { onSongClick(song, songs) }, onShareClick = { onShare(song) })
                         }
                     }
                 }

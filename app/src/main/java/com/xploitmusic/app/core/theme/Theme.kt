@@ -1,73 +1,80 @@
 package com.xploitmusic.app.core.theme
 
 import android.app.Activity
-import android.os.Build
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 
-private val DarkColorScheme = darkColorScheme(
-    primary = AuraPrimaryTheme,
-    onPrimary = AuraOnPrimaryTheme,
-    primaryContainer = XploitSteelBlueDark,
-    onPrimaryContainer = AuraTextPrimary,
-    secondary = XploitSteelBlue,
-    onSecondary = AuraOnPrimaryTheme,
-    secondaryContainer = XploitCardDark,
-    onSecondaryContainer = AuraTextPrimary,
-    tertiary = XploitSteelBlueLight,
-    onTertiary = AuraOnPrimaryTheme,
-    background = AuraBackground,
-    surface = AuraSurface,
-    surfaceVariant = AuraSurfaceVariant,
-    onBackground = AuraTextPrimary,
-    onSurface = AuraTextPrimary,
-    onSurfaceVariant = AuraTextSecondary,
+enum class AppTheme {
+    NOCHE,
+    ARENA
+}
+
+val NocheColorScheme = darkColorScheme(
+    primary = NochePrimary,
+    onPrimary = NocheOnPrimary,
+    primaryContainer = NochePrimaryLight,
+    onPrimaryContainer = NocheOnPrimary,
+    secondary = NochePrimary,
+    onSecondary = NocheOnPrimary,
+    secondaryContainer = NocheCard,
+    onSecondaryContainer = NocheTextPrimary,
+    tertiary = NochePrimaryLight,
+    onTertiary = NocheOnPrimary,
+    background = NocheBackground,
+    surface = NocheSurface,
+    surfaceVariant = NocheCard,
+    onBackground = NocheTextPrimary,
+    onSurface = NocheTextPrimary,
+    onSurfaceVariant = NocheTextSecondary,
     error = AuraErrorTheme,
-    onError = AuraTextPrimary,
-    outline = AuraDivider,
-    outlineVariant = AuraDivider,
+    onError = NocheTextPrimary,
+    outline = NocheBorder,
+    outlineVariant = NocheBorder,
     surfaceTint = Color.Transparent
 )
 
-private val LightColorScheme = lightColorScheme(
-    primary = XploitSteelBlueDark,
-    onPrimary = Color.White,
-    secondary = XploitSteelBlueDark,
-    tertiary = XploitSteelBlueDark,
-    background = Color(0xFFF4F7FA),
-    surface = Color.White,
-    surfaceVariant = Color(0xFFE5EDF3),
-    onBackground = Color(0xFF101820),
-    onSurface = Color(0xFF101820),
-    onSurfaceVariant = Color(0xFF536270),
-    outline = Color(0xFFBAC8D3),
+val ArenaColorScheme = lightColorScheme(
+    primary = ArenaPrimary,
+    onPrimary = ArenaOnPrimary,
+    primaryContainer = ArenaPrimaryLight,
+    onPrimaryContainer = ArenaTextPrimary,
+    secondary = ArenaPrimary,
+    onSecondary = ArenaOnPrimary,
+    secondaryContainer = ArenaCard,
+    onSecondaryContainer = ArenaTextPrimary,
+    tertiary = ArenaPrimaryLight,
+    onTertiary = ArenaOnPrimary,
+    background = ArenaBackground,
+    surface = ArenaSurface,
+    surfaceVariant = ArenaCard,
+    onBackground = ArenaTextPrimary,
+    onSurface = ArenaTextPrimary,
+    onSurfaceVariant = ArenaTextSecondary,
+    error = AuraErrorTheme,
+    onError = ArenaOnPrimary,
+    outline = ArenaBorder,
+    outlineVariant = ArenaBorder,
     surfaceTint = Color.Transparent
 )
 
 @Composable
 fun XploitMusicTheme(
-    darkTheme: Boolean = true,
-    dynamicColor: Boolean = false, // Disabled to keep our curated palette
+    themeMode: AppTheme = AppTheme.NOCHE,
     content: @Composable () -> Unit
 ) {
-    val colorScheme = when {
-        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
-            val context = LocalContext.current
-            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-        }
-        darkTheme -> DarkColorScheme
-        else -> LightColorScheme
+    val colorScheme = when (themeMode) {
+        AppTheme.NOCHE -> NocheColorScheme
+        AppTheme.ARENA -> ArenaColorScheme
     }
+
+    val isLight = themeMode == AppTheme.ARENA
 
     val view = LocalView.current
     if (!view.isInEditMode) {
@@ -75,8 +82,8 @@ fun XploitMusicTheme(
             val window = (view.context as Activity).window
             window.statusBarColor = colorScheme.background.toArgb()
             window.navigationBarColor = colorScheme.surface.toArgb()
-            WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = !darkTheme
-            WindowCompat.getInsetsController(window, view).isAppearanceLightNavigationBars = !darkTheme
+            WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = isLight
+            WindowCompat.getInsetsController(window, view).isAppearanceLightNavigationBars = isLight
         }
     }
 

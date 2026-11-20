@@ -17,6 +17,7 @@ import androidx.compose.material.icons.filled.AllInclusive
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Lyrics
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.RepeatOne
@@ -24,11 +25,15 @@ import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.OfflinePin
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import com.xploitmusic.app.core.theme.AppTheme
+import com.xploitmusic.app.presentation.share.ShareHelper
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CoroutineScope
 import androidx.compose.ui.Alignment
@@ -39,6 +44,7 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -102,7 +108,8 @@ fun PlayerScreen(
     )
     // Extract palette from thumbnail
     val context = LocalContext.current
-    LaunchedEffect(currentSong?.thumbnailUrl, steelBlue) {
+    val defaultPrimaryArgb = MaterialTheme.colorScheme.primary.toArgb()
+    LaunchedEffect(currentSong?.thumbnailUrl, steelBlue, defaultPrimaryArgb) {
         dominantColor = steelBlue
         currentSong?.thumbnailUrl?.let { url ->
             // Performance: Debounce fetching palette on quick skips
@@ -116,7 +123,7 @@ fun PlayerScreen(
                     bitmap?.let {
                         val palette = Palette.from(it).generate()
                         val artworkColor = Color(
-                            palette.getDominantColor(0xFF4682B4.toInt())
+                            palette.getDominantColor(defaultPrimaryArgb)
                         )
                         dominantColor = lerp(steelBlue, artworkColor, 0.32f)
                     }
@@ -162,6 +169,14 @@ fun PlayerScreen(
 
     val lyrics by viewModel.lyrics.collectAsState()
     val isLyricsLoading by viewModel.isLyricsLoading.collectAsState()
+    val currentPos by viewModel.currentPosition.collectAsState()
+    val activeLyricText = remember(lyrics, currentPos) {
+        if (lyrics.isEmpty()) null
+        else {
+            val currentIndex = lyrics.indexOfLast { it.startTimeMs <= currentPos }
+            if (currentIndex >= 0) lyrics[currentIndex].text else null
+        }
+    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         BoxWithConstraints(
@@ -171,6 +186,7 @@ fun PlayerScreen(
                 .padding(horizontal = 20.dp, vertical = 8.dp)
         ) {
             val isLandscape = maxWidth > maxHeight
+
             Column(modifier = Modifier.fillMaxSize()) {
                 PlayerTopBar(
                     onBackClick = onBackClick,
@@ -185,7 +201,8 @@ fun PlayerScreen(
                         PlayerArtwork(
                             song = song,
                             isLoading = isLoadingStream,
-                            accent = steelBlue,
+                            viewModel = viewModel,
+                            durationMs = duration,
                             modifier = Modifier.weight(0.9f).fillMaxHeight()
                         )
                         Spacer(modifier = Modifier.width(24.dp))
@@ -221,6 +238,13 @@ fun PlayerScreen(
                                 ) {
                                     notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
                                 }
+                            },
+                            onShareClick = {
+                                ShareHelper.shareSong(
+                                    context = context,
+                                    song = song,
+                                    lyricSnippet = activeLyricText
+                                )
                             }
                         )
                     }
@@ -228,7 +252,8 @@ fun PlayerScreen(
                     PlayerArtwork(
                         song = song,
                         isLoading = isLoadingStream,
-                        accent = steelBlue,
+                        viewModel = viewModel,
+                        durationMs = duration,
                         modifier = Modifier.weight(1f).fillMaxWidth()
                     )
                     PlayerDetails(
@@ -262,6 +287,13 @@ fun PlayerScreen(
                             ) {
                                 notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
                             }
+                        },
+                        onShareClick = {
+                            ShareHelper.shareSong(
+                                context = context,
+                                song = song,
+                                lyricSnippet = activeLyricText
+                            )
                         }
                     )
                     Spacer(modifier = Modifier.height(8.dp))
@@ -391,48 +423,105 @@ private fun PlayerTopBar(
     }
 }
 
+fun calculateProgress(currentPositionMs: Long, durationMs: Long, durationSeconds: Long): Float {
+    val effectiveDuration = if (durationMs > 0L) {
+        durationMs
+    } else {
+        durationSeconds.coerceIn(0L, Long.MAX_VALUE / 1_000L) * 1_000L
+    }
+    return if (effectiveDuration > 0L) {
+        (currentPositionMs.toFloat() / effectiveDuration).coerceIn(0f, 1f)
+    } else {
+        0f
+    }
+}
+
 @Composable
 private fun PlayerArtwork(
     song: Song,
     isLoading: Boolean,
-    accent: Color,
+    viewModel: PlayerViewModel,
+    durationMs: Long,
     modifier: Modifier = Modifier
 ) {
+    val currentPositionMs by viewModel.currentPosition.collectAsState()
+    val progress = calculateProgress(currentPositionMs, durationMs, song.durationSeconds)
+
     BoxWithConstraints(modifier = modifier, contentAlignment = Alignment.Center) {
-        val artworkSize = minOf(maxWidth, maxHeight) * 0.9f
+        val maxDim = minOf(maxWidth, maxHeight)
+        val ringSize = minOf(maxDim, 300.dp)
+        val artworkSize = minOf(maxDim * 0.8f, 240.dp)
+
         Box(
-            modifier = Modifier
-                .size(artworkSize)
-                .shadow(22.dp, MaterialTheme.shapes.large)
-                .clip(MaterialTheme.shapes.large)
+            modifier = Modifier.size(ringSize),
+            contentAlignment = Alignment.Center
         ) {
-            AsyncImage(
-                model = song.thumbnailUrl,
-                contentDescription = "Carátula de ${song.title}",
+            // Anillo circular de progreso alrededor de la carátula (~300 dp en primary)
+            CircularProgressIndicator(
+                progress = { progress },
                 modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop
+                color = MaterialTheme.colorScheme.primary,
+                strokeWidth = 3.5.dp,
+                trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
             )
-            if (isLoading) {
-                Surface(
-                    modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth(),
-                    color = Color.Black.copy(alpha = 0.68f)
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                        horizontalArrangement = Arrangement.Center,
-                        verticalAlignment = Alignment.CenterVertically
+
+            // Carátula cuadrada de 240 dp con esquinas de 24 dp
+            val coverShape = RoundedCornerShape(24.dp)
+            Box(
+                modifier = Modifier
+                    .size(artworkSize)
+                    .shadow(16.dp, coverShape)
+                    .clip(coverShape)
+                    .background(
+                        brush = Brush.linearGradient(
+                            colors = listOf(
+                                MaterialTheme.colorScheme.surfaceVariant,
+                                MaterialTheme.colorScheme.primaryContainer
+                            )
+                        )
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                if (!song.thumbnailUrl.isNullOrBlank()) {
+                    AsyncImage(
+                        model = song.thumbnailUrl,
+                        contentDescription = "Carátula de ${song.title}",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Default.MusicNote,
+                        contentDescription = null,
+                        modifier = Modifier.size(64.dp),
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+
+                if (isLoading) {
+                    Surface(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth(),
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f)
                     ) {
-                        CircularProgressIndicator(
-                            color = accent,
-                            strokeWidth = 2.5.dp,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Text(
-                            "Preparando audio…",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Color.White
-                        )
+                        Row(
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            CircularProgressIndicator(
+                                color = MaterialTheme.colorScheme.primary,
+                                strokeWidth = 2.dp,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                "Preparando audio…",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
                     }
                 }
             }
@@ -457,6 +546,7 @@ private fun PlayerDetails(
     onPlaylistClick: () -> Unit,
     onFavoriteClick: () -> Unit,
     onDownloadClick: () -> Unit,
+    onShareClick: () -> Unit,
     currentOrigin: com.xploitmusic.app.domain.model.SongOrigin? = null,
     modifier: Modifier = Modifier
 ) {
@@ -491,6 +581,18 @@ private fun PlayerDetails(
                 }
             }
             AnimatedFavoriteButton(isFavorite = isFavorite, onClick = onFavoriteClick)
+            Spacer(modifier = Modifier.width(4.dp))
+            IconButton(
+                onClick = onShareClick,
+                modifier = Modifier.size(48.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Share,
+                    contentDescription = "Compartir canción",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(28.dp)
+                )
+            }
         }
 
         Spacer(modifier = Modifier.height(8.dp))
@@ -737,20 +839,23 @@ private fun AnimatedFavoriteButton(
         label = "favoriteScale"
     )
     val tint by animateColorAsState(
-        targetValue = if (isFavorite) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.7f),
+        targetValue = if (isFavorite) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
         animationSpec = tween(300),
         label = "favoriteTint"
     )
 
-    IconButton(onClick = {
-        animateTrigger = true
-        onClick()
-    }) {
+    IconButton(
+        onClick = {
+            animateTrigger = true
+            onClick()
+        },
+        modifier = Modifier.size(48.dp)
+    ) {
         Icon(
             imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
             contentDescription = if (isFavorite) "Remove from favorites" else "Add to favorites",
             tint = tint,
-            modifier = Modifier.size(32.dp).scale(scale)
+            modifier = Modifier.size(28.dp).scale(scale)
         )
     }
 }

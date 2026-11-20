@@ -68,6 +68,14 @@ abstract class DataModule {
     @Singleton
     abstract fun bindAutoplaySettings(impl: com.xploitmusic.app.data.local.DataStoreAutoplaySettings): com.xploitmusic.app.domain.repository.AutoplaySettings
 
+    @Binds
+    @Singleton
+    abstract fun bindThemeSettings(impl: com.xploitmusic.app.data.local.DataStoreThemeSettings): com.xploitmusic.app.domain.repository.ThemeSettings
+
+    @Binds
+    @Singleton
+    abstract fun bindShareSettings(impl: com.xploitmusic.app.data.local.DataStoreShareSettings): com.xploitmusic.app.domain.repository.ShareSettings
+
     companion object {
         @Provides
         @Singleton

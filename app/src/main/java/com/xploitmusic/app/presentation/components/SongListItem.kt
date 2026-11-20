@@ -6,10 +6,10 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.GraphicEq
-import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -26,7 +26,8 @@ fun SongListItem(
     song: Song,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    isPlaying: Boolean = false
+    isPlaying: Boolean = false,
+    onShareClick: (() -> Unit)? = null
 ) {
     Row(
         modifier = modifier
@@ -101,6 +102,36 @@ fun SongListItem(
                     .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.68f))
                     .padding(horizontal = 8.dp, vertical = 3.dp)
             )
+        }
+
+        if (onShareClick != null) {
+            Spacer(modifier = Modifier.width(4.dp))
+            var showMenu by remember { mutableStateOf(false) }
+            Box {
+                IconButton(
+                    onClick = { showMenu = true },
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.MoreVert,
+                        contentDescription = "Opciones",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                DropdownMenu(
+                    expanded = showMenu,
+                    onDismissRequest = { showMenu = false }
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Compartir") },
+                        leadingIcon = { Icon(Icons.Default.Share, contentDescription = null) },
+                        onClick = {
+                            showMenu = false
+                            onShareClick()
+                        }
+                    )
+                }
+            }
         }
     }
 }

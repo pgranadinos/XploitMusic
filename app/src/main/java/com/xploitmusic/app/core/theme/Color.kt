@@ -2,36 +2,48 @@ package com.xploitmusic.app.core.theme
 
 import androidx.compose.ui.graphics.Color
 
-// XploitMusic brand palette
-val XploitSteelBlue = Color(0xFF4682B4)
-val XploitSteelBlueLight = Color(0xFF6FA8D3)
-val XploitSteelBlueDark = Color(0xFF2F5F87)
+// ── Noche Theme Tokens (Default) ──
+val NocheBackground = Color(0xFF070B0F)
+val NocheSurface = Color(0xFF111820)
+val NocheCard = Color(0xFF18232D)
+val NocheBorder = Color(0xFF2A3946)
 
-// Legacy accent names kept temporarily for screens still pending the UI migration.
-val XploitViolet = XploitSteelBlue
-val XploitDeepPurple = XploitSteelBlueDark
-// Dark foundation: blue-black surfaces instead of the previous green-grey tint.
-val XploitBlack = Color(0xFF070B0F)
-val XploitDarkSurface = Color(0xFF111820)
-val XploitCardDark = Color(0xFF18232D)
+val NocheTextPrimary = Color(0xFFF4F7FA)
+val NocheTextSecondary = Color(0xFFA7B1BA)
+val NocheTextMuted = Color(0xFF68737D)
 
-// Legacy compat
-val AuraBlack = XploitBlack
-val AuraDarkGrey = XploitDarkSurface
-val AuraAccent = XploitViolet
-val AuraWhite = Color(0xFFFFFFFF)
+val NochePrimary = Color(0xFF4682B4)
+val NochePrimaryLight = Color(0xFF6FA8D3)
+val NocheOnPrimary = Color(0xFF06131D)
 
-// Aura Design System (Spotify/Harmony Inspired)
-val AuraBackground = XploitBlack
-val AuraSurface = XploitDarkSurface
-val AuraSurfaceVariant = XploitCardDark
-val AuraPrimaryTheme = XploitSteelBlue
-val AuraOnPrimaryTheme = Color(0xFF06131D)
-val AuraTextPrimary = Color(0xFFF4F7FA)
-val AuraTextSecondary = Color(0xFFA7B1BA)
-val AuraTextDisabled = Color(0xFF68737D)
+// ── Arena Theme Tokens ──
+val ArenaBackground = Color(0xFFF4ECE1)
+val ArenaSurface = Color(0xFFF4ECE1)
+val ArenaCard = Color(0xFFE9D8C2)
+val ArenaBorder = Color(0xFFD4BFA5)
+
+val ArenaTextPrimary = Color(0xFF2A2118)
+val ArenaTextSecondary = Color(0xFF6B5B4B)
+
+val ArenaPrimary = Color(0xFF2F5F87)
+val ArenaPrimaryLight = Color(0xFF5B8FB9)
+val ArenaOnPrimary = Color(0xFFFFFFFF)
+
+// ── Legacy Compatibility Tokens ──
+val XploitSteelBlue = NochePrimary
+val XploitSteelBlueLight = NochePrimaryLight
+val XploitSteelBlueDark = ArenaPrimary
+val XploitBlack = NocheBackground
+val XploitDarkSurface = NocheSurface
+val XploitCardDark = NocheCard
+
+val AuraBackground = NocheBackground
+val AuraSurface = NocheSurface
+val AuraSurfaceVariant = NocheCard
+val AuraPrimaryTheme = NochePrimary
+val AuraOnPrimaryTheme = NocheOnPrimary
+val AuraTextPrimary = NocheTextPrimary
+val AuraTextSecondary = NocheTextSecondary
+val AuraTextDisabled = NocheTextMuted
 val AuraErrorTheme = Color(0xFFFF6B6B)
-
-// Additional semantic colors for menus and navigation
-val AuraNavUnselected = AuraTextSecondary
-val AuraDivider = Color(0xFF2A3946)
+val AuraDivider = NocheBorder

@@ -11,9 +11,12 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Storage
+import com.xploitmusic.app.core.theme.AppTheme
+import com.xploitmusic.app.domain.repository.ShareMode
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -35,6 +38,8 @@ fun SettingsScreen(
 ) {
     val context = LocalContext.current
     val isAutoplayEnabled by viewModel.isAutoplayEnabled.collectAsState()
+    val themeMode by viewModel.themeMode.collectAsState()
+    val shareMode by viewModel.shareMode.collectAsState()
     val storageUsedFormatted by viewModel.storageUsedFormatted.collectAsState()
     val recentAuditLogs by viewModel.recentAuditLogs.collectAsState()
 
@@ -103,7 +108,95 @@ fun SettingsScreen(
                 }
             }
 
-            // ── Section 2: Descargas ──
+            // ── Section 2: Interfaz ──
+            SettingsSectionHeader(title = "Interfaz", icon = Icons.Default.Palette)
+
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                shape = MaterialTheme.shapes.medium
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp)
+                ) {
+                    Text(
+                        text = "Tema visual",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Selecciona el esquema de color de la aplicación.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        FilterChip(
+                            selected = themeMode == AppTheme.NOCHE,
+                            onClick = { viewModel.setThemeMode(AppTheme.NOCHE) },
+                            label = { Text("Noche") },
+                            modifier = Modifier.weight(1f)
+                        )
+                        FilterChip(
+                            selected = themeMode == AppTheme.ARENA,
+                            onClick = { viewModel.setThemeMode(AppTheme.ARENA) },
+                            label = { Text("Arena") },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+            }
+
+            // ── Section: Compartir ──
+            SettingsSectionHeader(title = "Compartir", icon = Icons.Default.Share)
+
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                shape = MaterialTheme.shapes.medium
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp)
+                ) {
+                    Text(
+                        text = "Modo de compartir",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Elige si deseas compartir tarjeta con solo portada o con audio.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        FilterChip(
+                            selected = shareMode == ShareMode.COVER,
+                            onClick = { viewModel.setShareMode(ShareMode.COVER) },
+                            label = { Text("Solo portada") },
+                            modifier = Modifier.weight(1f)
+                        )
+                        FilterChip(
+                            selected = shareMode == ShareMode.AUDIO,
+                            onClick = { viewModel.setShareMode(ShareMode.AUDIO) },
+                            label = { Text("Con audio") },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+            }
+
+            // ── Section 3: Descargas ──
             SettingsSectionHeader(title = "Descargas", icon = Icons.Default.Storage)
 
             Surface(

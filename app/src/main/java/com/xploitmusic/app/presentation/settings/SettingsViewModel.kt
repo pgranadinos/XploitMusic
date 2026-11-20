@@ -3,9 +3,13 @@ package com.xploitmusic.app.presentation.settings
 import android.content.Intent
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.xploitmusic.app.core.theme.AppTheme
 import com.xploitmusic.app.core.util.PlaybackLogManager
 import com.xploitmusic.app.data.repository.OfflineManager
 import com.xploitmusic.app.domain.repository.QueueManager
+import com.xploitmusic.app.domain.repository.ShareMode
+import com.xploitmusic.app.domain.repository.ShareSettings
+import com.xploitmusic.app.domain.repository.ThemeSettings
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -20,10 +24,16 @@ import javax.inject.Inject
 class SettingsViewModel @Inject constructor(
     private val queueManager: QueueManager,
     private val offlineManager: OfflineManager,
-    private val playbackLogManager: PlaybackLogManager
+    private val playbackLogManager: PlaybackLogManager,
+    private val themeSettings: ThemeSettings,
+    private val shareSettings: ShareSettings
 ) : ViewModel() {
 
     val isAutoplayEnabled: StateFlow<Boolean> = queueManager.isAutoplayEnabled
+
+    val themeMode: StateFlow<AppTheme> = themeSettings.themeMode
+
+    val shareMode: StateFlow<ShareMode> = shareSettings.shareMode
 
     val storageUsedFormatted: StateFlow<String> = offlineManager.getStorageUsed()
         .map { bytes -> formatStorageSize(bytes) }
@@ -34,6 +44,14 @@ class SettingsViewModel @Inject constructor(
 
     fun toggleAutoplay() {
         queueManager.toggleAutoplay()
+    }
+
+    fun setThemeMode(theme: AppTheme) {
+        themeSettings.setThemeMode(theme)
+    }
+
+    fun setShareMode(mode: ShareMode) {
+        shareSettings.setShareMode(mode)
     }
 
     fun clearAllDownloads() {
